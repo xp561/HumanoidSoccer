@@ -37,6 +37,7 @@ This repository contains:
 - Core task/environment code: [`source/whole_body_tracking/soccer`](source/whole_body_tracking/soccer)
 - Training & play python entrypoints: [`scripts/rsl_rl`](scripts/rsl_rl)
 - Shell helpers: [`shell`](shell)
+- MuJoCo sim2sim rollout code: [`exp`](exp)
 - Motion datasets and labels: [`motions`](motions) 
 
 The kick motions used in our paper are publicly released in [`motions`](motions).
@@ -67,17 +68,15 @@ pip install -e source/whole_body_tracking
 
 ## Training & Play Example
 ### Training
-Uniform sampling for example
+Train the default rolling-ball soccer policy with the progressive helper:
 ```bash
-python scripts/rsl_rl/train_multi.py --task Tracking-Flat-G1-SoccerDestination-RNN-v0 \
-    --motion_path motions/soccer-standard \
-    --num_envs 8192 \
-    --headless
+bash shell/progressive_soccer_train_play.sh test
 ```
 ### Play
 ```bash
-python scripts/rsl_rl/play_multi.py --task Tracking-Flat-G1-SoccerDestination-RNN-v0 \
+python scripts/rsl_rl/play_multi.py --task Tracking-Flat-G1-SoccerMoving-RNN-v0 \
     --motion_path motions/soccer-standard \
+    --load_run <run-name> \
     --num_envs 1  
 ```
 
@@ -87,12 +86,13 @@ python scripts/rsl_rl/play_multi.py --task Tracking-Flat-G1-SoccerDestination-RN
 bash shell/progressive_soccer_train_play.sh test
 ```
 
-This helper runs the two training stages sequentially and automatically resolves the latest first-stage run as `--load_run` for the second stage. If no run name is provided, it defaults to `test`.
+This helper first trains the motion-tracking stage with run name `test`, then resumes it for the rolling-ball soccer stage. Override the defaults with `RUN_NAME=...`, `LOAD_RUN=<run-name>`, `NUM_ENVS=...`, or `MIMIC_MAX_ITERATIONS=...`.
 
 ### Play
 ```bash
-python scripts/rsl_rl/play_multi.py --task Tracking-Flat-G1-SoccerDestination-RNN-v0 \
+python scripts/rsl_rl/play_multi.py --task Tracking-Flat-G1-SoccerMoving-RNN-v0 \
     --motion_path motions/soccer-standard \
+    --load_run <run-name> \
     --num_envs 1  
 ```
 
@@ -102,6 +102,7 @@ python scripts/rsl_rl/play_multi.py --task Tracking-Flat-G1-SoccerDestination-RN
 
 - [x] Release PAiD training code
 - [x] Release PAiD motion dataset
+- [x] Release PAiD ckpt and sim2sim code
 - [ ] Release PAiD domain randomization code
 
 ## Citation

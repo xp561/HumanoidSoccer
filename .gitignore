@@ -29,6 +29,12 @@
 docker/artifacts/
 *.tmp
 
+# Supplemental/evaluation artifacts are not part of the public code release.
+exp/results/
+exp/fix_ball_alignment_metric.py
+exp/plot_soccer_heatmaps.py
+exp/mujoco_soccer/eval_baseline.py
+
 # Isaac-Sim packman
 _isaac_sim*
 _repo
