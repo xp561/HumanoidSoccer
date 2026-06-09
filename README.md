@@ -96,7 +96,19 @@ python scripts/rsl_rl/play_multi.py --task Tracking-Flat-G1-SoccerMoving-RNN-v0 
     --num_envs 1  
 ```
 
-##
+## MuJoCo Sim2Sim & Evaluation
+
+Run a visualized MuJoCo sim2sim rollout:
+
+```bash
+python exp/mujoco_soccer_experiment.py \
+    --policy ckp/policy_30000.onnx \
+    --motion-path motions/soccer-standard \
+    --num-trials 1 \
+    --visualize
+```
+
+See [`exp/README.md`](exp/README.md) for ONNX export, batch sim2sim evaluation, output files, and offline trajectory metrics.
 
 ## TODO
 
