@@ -25,7 +25,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--ball-forward-range",
         type=float,
         nargs=2,
-        default=(0.5, 5.0),
+        default=(0.5, 3.0),
         metavar=("MIN", "MAX"),
         help="Ball robot-local forward/x spawn range in front of the robot.",
     )
@@ -33,7 +33,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--ball-lateral-range",
         type=float,
         nargs=2,
-        default=(-2.5, 2.5),
+        default=(-1.5, 1.5),
         metavar=("MIN", "MAX"),
         help="Ball robot-local lateral/y spawn range.",
     )
