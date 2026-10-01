@@ -48,8 +48,21 @@ def randomize_joint_default_pos(
         if env_ids != slice(None) and joint_ids != slice(None):
             env_ids = env_ids[:, None]
         asset.data.default_joint_pos[env_ids, joint_ids] = pos
-        # update the offset in action since it is not updated automatically
-        env.action_manager.get_term("joint_pos")._offset[env_ids, joint_ids] = pos
+        # Update the action offset since it is not updated automatically.  The
+        # articulation joint indices need not match the action-vector indices:
+        # R1, for example, keeps head joints in the articulation but excludes
+        # them from the position-action term.
+        action_term = env.action_manager.get_term("joint_pos")
+        action_joint_ids = action_term._joint_ids
+        if isinstance(action_joint_ids, slice):
+            action_term._offset[env_ids, joint_ids] = pos
+        else:
+            action_joint_ids = torch.as_tensor(action_joint_ids, device=asset.device)
+            selected_joint_ids = torch.arange(asset.num_joints, device=asset.device) if isinstance(joint_ids, slice) else joint_ids
+            matches = action_joint_ids[:, None] == selected_joint_ids[None, :]
+            action_indices, pos_indices = matches.nonzero(as_tuple=True)
+            if action_indices.numel():
+                action_term._offset[env_ids, action_indices] = pos[:, pos_indices]
 
 
 def randomize_rigid_body_com(

@@ -354,12 +354,14 @@ class MotionCommand(CommandTerm):
 
     @property
     def robot_pelvis_pos_w(self) -> torch.Tensor:
-        pelvis_index = self.robot.body_names.index("pelvis")
+        pelvis_name = "pelvis_link" if "pelvis_link" in self.robot.body_names else "pelvis"
+        pelvis_index = self.robot.body_names.index(pelvis_name)
         return self.robot.data.body_pos_w[:, pelvis_index]
     
     @property
     def robot_pelvis_quat_w(self) -> torch.Tensor:
-        pelvis_index = self.robot.body_names.index("pelvis")
+        pelvis_name = "pelvis_link" if "pelvis_link" in self.robot.body_names else "pelvis"
+        pelvis_index = self.robot.body_names.index(pelvis_name)
         return self.robot.data.body_quat_w[:, pelvis_index]
 
     @property
