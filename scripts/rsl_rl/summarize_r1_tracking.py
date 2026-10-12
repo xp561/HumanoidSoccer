@@ -55,7 +55,7 @@ def main() -> None:
             "AUJ_proxy_peak_link_jerk_deviation": "Mean absolute difference of per-link peak third position differences; explicitly not asserted as the paper's AUJ.",
         },
     }
-    (args.output_dir / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (args.output_dir / "tracking_summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     lines = ["# R1 Standard tracking evaluation", "", "| Metric | Mean | SD | Min | Max |", "|---|---:|---:|---:|---:|"]
     for metric in METRICS:
         item = aggregate[metric]

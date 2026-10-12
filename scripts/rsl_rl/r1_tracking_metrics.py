@@ -59,3 +59,18 @@ def evaluate_tracking(
         "policy_mean_peak_link_jerk": float(policy_peak.mean()),
         "reference_mean_peak_link_jerk": float(reference_peak.mean()),
     }
+
+
+def tracking_trace(policy_body_pos: np.ndarray, reference_body_pos: np.ndarray) -> dict[str, np.ndarray]:
+    """Return per-frame diagnostics using the same root-origin alignment as G-MPJPE."""
+    policy_zero = policy_body_pos - policy_body_pos[0, 0]
+    reference_zero = reference_body_pos - reference_body_pos[0, 0]
+    global_delta = policy_zero - reference_zero
+    body_error_mm = np.linalg.norm(global_delta, axis=-1) * 1000.0
+    local_delta = (policy_zero - policy_zero[:, :1]) - (reference_zero - reference_zero[:, :1])
+    return {
+        "global_mpjpe_mm": body_error_mm.mean(axis=1),
+        "root_position_error_mm": body_error_mm[:, 0],
+        "local_mpjpe_mm": np.linalg.norm(local_delta, axis=-1).mean(axis=1) * 1000.0,
+        "per_body_error_mm": body_error_mm,
+    }

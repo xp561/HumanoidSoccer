@@ -98,6 +98,9 @@ def main() -> None:
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--rolling-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--model-label", default="R1", help="Robot/model label used in report text.")
+    parser.add_argument("--checkpoint", default="model_103998.pt")
+    parser.add_argument("--motions-label", default="motions/r1-converted (10 Standard motion files selected by the environment)")
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -106,8 +109,8 @@ def main() -> None:
     for rows, label in ((static_rows, "static"), (rolling_rows, "rolling")):
         for row in rows:
             row["in_paper_table_iv_workspace"] = 0.5 <= row["forward_m"] <= 2.0 and abs(row["lateral_m"]) <= 1.0
-        heatmap(rows, "success_goal_rate", f"R1 {label}: goal success rate", args.output_dir / f"{label}_success_heatmap.png")
-        heatmap(rows, "accuracy_cosine", f"R1 {label}: kick direction cosine", args.output_dir / f"{label}_accuracy_heatmap.png")
+        heatmap(rows, "success_goal_rate", f"{args.model_label} {label}: goal success rate", args.output_dir / f"{label}_success_heatmap.png")
+        heatmap(rows, "accuracy_cosine", f"{args.model_label} {label}: kick direction cosine", args.output_dir / f"{label}_accuracy_heatmap.png")
 
     all_rows = static_rows + rolling_rows
     with (args.output_dir / "per_position.csv").open("w", newline="") as stream:
@@ -127,18 +130,18 @@ def main() -> None:
         "rolling_ball_speed": "independently uniform [0.1, 0.3] m/s per environment",
         "rolling_ball_direction": "independently uniform [0, 2pi) per environment",
         "success_predicate": "reused exp.mujoco_soccer.metrics.goal_crossed",
-        "model": "model_103998.pt",
-        "motions": "motions/r1-converted (10 Standard motion files selected by the environment)",
+        "model": args.checkpoint,
+        "motions": args.motions_label,
     }
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     paper = {"static": (0.913, 0.9689), "rolling": (0.719, 0.8892)}
-    comparison = ["# R1 soccer evaluation: Table IV-aligned comparison", "", "The primary comparison uses the paper Table IV workspace: forward 0.5–2.0 m, lateral -1.0–1.0 m.", "", "| Condition | R1 success rate (95% Wilson CI) | R1 direction cosine | Paper PAiD success rate | Paper PAiD direction cosine |", "|---|---:|---:|---:|---:|"]
+    comparison = [f"# {args.model_label} soccer evaluation: Table IV-aligned comparison", "", "The primary comparison uses the paper Table IV workspace: forward 0.5–2.0 m, lateral -1.0–1.0 m.", "", f"| Condition | {args.model_label} success rate (95% Wilson CI) | {args.model_label} direction cosine | Paper PAiD success rate | Paper PAiD direction cosine |", "|---|---:|---:|---:|---:|"]
     for label in ("static", "rolling"):
         values = summary["paper_table_iv_workspace"][label]
         low, high = values["success_goal_rate_wilson_95"]
         comparison.append(f"| {label} | {values['success_goal_rate']:.4f} ({low:.4f}–{high:.4f}) | {values['kick_accuracy_cosine']:.4f} | {paper[label][0]:.4f} | {paper[label][1]:.4f} |")
-    comparison.extend(["", "## Protocol and comparability", "", "- Success uses the repository's original `goal_crossed` predicate; accuracy is the cosine of outgoing ball direction and ball-to-goal direction at contact.", "- The R1 evaluation uses Isaac Lab and R1-converted Standard motions, whereas the paper results use G1/MuJoCo. Values are therefore a protocol-aligned baseline comparison, not a claim of identical simulator or robot conditions.", "- The rolling-speed interval, grid, trial count, and initial-position radius follow the paper. Rolling direction is sampled uniformly as an explicit extension because the paper text specifies speed but not a direction distribution in its Table IV description.", "- R1 has no converted Stylized motion set, so this report does not claim a Table III Stylized comparison.", ""])
+    comparison.extend(["", "## Protocol and comparability", "", "- Success uses the repository's original `goal_crossed` predicate; accuracy is the cosine of outgoing ball direction and ball-to-goal direction at contact.", "- Values are a protocol-aligned baseline comparison, not a claim of identical simulator or robot conditions.", "- The rolling-speed interval, grid, trial count, and initial-position radius follow the paper. Rolling direction is sampled uniformly as an explicit extension because the paper text specifies speed but not a direction distribution in its Table IV description.", "- Stylized-motion comparison requires matching motion data and is not claimed by this report.", ""])
     (args.output_dir / "table_iv_comparison.md").write_text("\n".join(comparison), encoding="utf-8")
 
 

@@ -41,6 +41,7 @@ parser.add_argument("--eval_robot_init_radius", type=float, default=None, help="
 parser.add_argument("--eval_ball_speed_range", nargs=2, type=float, default=None, metavar=("MIN", "MAX"), help="Independently sample each environment's ball speed uniformly in [MIN, MAX].")
 parser.add_argument("--tracking_eval_steps", type=int, default=0, help="Collect body/joint tracking metrics for this many policy steps; 0 disables it.")
 parser.add_argument("--tracking_eval_output", type=str, default=None, help="Write per-environment R1 tracking metrics as JSON after --tracking_eval_steps.")
+parser.add_argument("--tracking_trace_output", type=str, default=None, help="Optional .npz path for per-frame tracking diagnostics (single environment only).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -85,7 +86,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import soccer.tasks  # noqa: F401
 from soccer.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
 from r1_eval_metrics import KickTrial
-from r1_tracking_metrics import evaluate_tracking
+from r1_tracking_metrics import evaluate_tracking, tracking_trace
 
 def get_motion_files(motion_path: str) -> list[str]:
     """
@@ -148,8 +149,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         )
         env_cfg.sim.physics_material = env_cfg.scene.terrain.physics_material
 
-    env_cfg.viewer.origin_type = None
-    env_cfg.viewer.asset_name = None
+    # Preserve the task's robot-following camera for recorded videos.  The
+    # global viewer is still preferable for non-video batch playback.
+    if not args_cli.video:
+        env_cfg.viewer.origin_type = None
+        env_cfg.viewer.asset_name = None
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -375,6 +379,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 }
                 with open(output, "w", encoding="utf-8") as stream:
                     json.dump(payload, stream, indent=2)
+                if args_cli.tracking_trace_output is not None:
+                    if env.unwrapped.num_envs != 1:
+                        raise ValueError("--tracking_trace_output requires --num_envs 1")
+                    np.savez(
+                        args_cli.tracking_trace_output,
+                        **tracking_trace(values["policy_body"][:, 0], values["reference_body"][:, 0]),
+                    )
                 print(f"[INFO]: Wrote R1 tracking evaluation to: {output}")
                 break
 
