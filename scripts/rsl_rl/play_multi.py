@@ -3,6 +3,8 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import json
+import math
 import sys
 
 from isaaclab.app import AppLauncher
@@ -23,6 +25,23 @@ parser.add_argument("--motion_file", type=str, default=None, help="Path to a sin
 parser.add_argument("--motion_path", type=str, default=None, help="The path to the directory containing motion files for random sampling (no export).")
 
 parser.add_argument("--export_motion_name", type=str, default=None, help="Select one motion for exporter (required when --motion_file is used).")
+parser.add_argument("--eval_steps", type=int, default=0, help="Run a bounded soccer evaluation and write one JSON summary; 0 disables evaluation.")
+parser.add_argument("--eval_output", type=str, default=None, help="Path for the optional soccer evaluation JSON summary.")
+parser.add_argument("--eval_ball_forward", type=float, default=None, help="Fixed ball forward distance for evaluation, in meters.")
+parser.add_argument("--eval_ball_lateral", type=float, default=0.0, help="Fixed ball lateral offset for evaluation, in meters.")
+parser.add_argument("--eval_ball_speed", type=float, default=0.0, help="Fixed initial ball speed for evaluation, in m/s.")
+parser.add_argument("--eval_ball_direction_deg", type=float, default=0.0, help="Initial ball direction: 0 points toward the goal.")
+parser.add_argument("--eval_ground_friction", type=float, default=None, help="Override ground friction for evaluation before simulation starts.")
+parser.add_argument("--eval_ground_restitution", type=float, default=None, help="Override ground restitution for evaluation before simulation starts.")
+parser.add_argument("--eval_ball_obs_noise", type=float, default=0.0, help="Gaussian standard deviation applied only to the observed ball target position.")
+parser.add_argument("--eval_initial_yaw_deg", type=float, default=None, help="Fixed initial yaw offset for evaluation, in degrees.")
+parser.add_argument("--eval_push_speed", type=float, default=0.0, help="One-time lateral root-velocity perturbation for evaluation, in m/s.")
+parser.add_argument("--eval_seed", type=int, default=None, help="Deterministic seed for one evaluation trial.")
+parser.add_argument("--eval_robot_init_radius", type=float, default=None, help="Sample the robot initial xy position uniformly in this-radius disk.")
+parser.add_argument("--eval_ball_speed_range", nargs=2, type=float, default=None, metavar=("MIN", "MAX"), help="Independently sample each environment's ball speed uniformly in [MIN, MAX].")
+parser.add_argument("--tracking_eval_steps", type=int, default=0, help="Collect body/joint tracking metrics for this many policy steps; 0 disables it.")
+parser.add_argument("--tracking_eval_output", type=str, default=None, help="Write per-environment R1 tracking metrics as JSON after --tracking_eval_steps.")
+parser.add_argument("--tracking_trace_output", type=str, default=None, help="Optional .npz path for per-frame tracking diagnostics (single environment only).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -46,6 +65,7 @@ import gymnasium as gym
 import os
 import glob
 import pathlib
+import numpy as np
 import torch
 
 from rsl_rl.runners import OnPolicyRunner
@@ -65,6 +85,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # Import extensions to set up environment tasks
 import soccer.tasks  # noqa: F401
 from soccer.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
+from r1_eval_metrics import KickTrial
+from r1_tracking_metrics import evaluate_tracking, tracking_trace
 
 def get_motion_files(motion_path: str) -> list[str]:
     """
@@ -98,8 +120,40 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
-    env_cfg.viewer.origin_type = None
-    env_cfg.viewer.asset_name = None
+    if args_cli.eval_steps and args_cli.eval_ball_forward is not None:
+        angle = math.radians(args_cli.eval_ball_direction_deg)
+        env_cfg.commands.motion.eval_fixed_ball_pos = (
+            args_cli.eval_ball_lateral,
+            -args_cli.eval_ball_forward,
+            0.11,
+        )
+        env_cfg.commands.motion.eval_fixed_ball_lin_vel = (
+            args_cli.eval_ball_speed * math.sin(angle),
+            -args_cli.eval_ball_speed * math.cos(angle),
+            0.0,
+        )
+        env_cfg.commands.motion.eval_fixed_target_destination = (0.0, -5.0, 0.11)
+    if args_cli.eval_steps and args_cli.eval_initial_yaw_deg is not None:
+        yaw = math.radians(args_cli.eval_initial_yaw_deg)
+        env_cfg.commands.motion.pose_range = {**env_cfg.commands.motion.pose_range, "yaw": (yaw, yaw)}
+    if args_cli.eval_steps and args_cli.eval_robot_init_radius is not None:
+        env_cfg.commands.motion.eval_robot_init_radius = args_cli.eval_robot_init_radius
+    if args_cli.eval_steps and args_cli.eval_ball_speed_range is not None:
+        env_cfg.commands.motion.eval_ball_speed_range = tuple(args_cli.eval_ball_speed_range)
+    if args_cli.eval_steps and (args_cli.eval_ground_friction is not None or args_cli.eval_ground_restitution is not None):
+        material = env_cfg.scene.terrain.physics_material
+        env_cfg.scene.terrain.physics_material = material.replace(
+            static_friction=args_cli.eval_ground_friction if args_cli.eval_ground_friction is not None else material.static_friction,
+            dynamic_friction=args_cli.eval_ground_friction if args_cli.eval_ground_friction is not None else material.dynamic_friction,
+            restitution=args_cli.eval_ground_restitution if args_cli.eval_ground_restitution is not None else material.restitution,
+        )
+        env_cfg.sim.physics_material = env_cfg.scene.terrain.physics_material
+
+    # Preserve the task's robot-following camera for recorded videos.  The
+    # global viewer is still preferable for non-video batch playback.
+    if not args_cli.video:
+        env_cfg.viewer.origin_type = None
+        env_cfg.viewer.asset_name = None
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -160,6 +214,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    if args_cli.eval_seed is not None:
+        env.reset(seed=args_cli.eval_seed)
+        torch.manual_seed(args_cli.eval_seed)
 
     log_dir = os.path.dirname(resume_path)
 
@@ -192,10 +249,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # export policy to onnx/jit
     export_targets: list[tuple[str, str]] = []
 
-    if args_cli.motion_file is not None:
-        # Single-file mode: export directly using the requested name or file name.
-        export_name = args_cli.export_motion_name or os.path.basename(args_cli.motion_file)
-        export_targets.append((args_cli.motion_file, export_name))
+    if args_cli.motion_file is not None and args_cli.export_motion_name is not None:
+        # A single motion is exported only when requested explicitly.
+        export_targets.append((args_cli.motion_file, args_cli.export_motion_name))
     elif args_cli.motion_path is not None and args_cli.export_motion_name is not None:
         # Directory mode: export by matching names from export_motion_name.
         if args_cli.export_motion_name.strip().lower() == "all":
@@ -244,19 +300,93 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     # breakpoint()
     obs, _ = env.get_observations()
+    trials = None
+    tracking = None
+    previous_ball = None
+    goal_center = None
+    goal_normal = None
+    if args_cli.eval_steps:
+        command = env.unwrapped.command_manager.get_term("motion")
+        ball = env.unwrapped.scene["soccer_ball"]
+        previous_ball = ball.data.root_pos_w.detach().cpu().numpy().copy()
+        goal_center = (command.target_destination_pos + env.unwrapped.scene.env_origins).detach().cpu().numpy()
+        goal_normal = previous_ball[:, :2] - goal_center[:, :2]
+        goal_normal /= np.linalg.norm(goal_normal, axis=1, keepdims=True)
+        trials = [KickTrial() for _ in range(env.unwrapped.num_envs)]
+    if args_cli.tracking_eval_steps:
+        tracking = {"policy_body": [], "reference_body": [], "policy_joint": [], "reference_joint": []}
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            actions = policy(obs)
+            actor_obs = obs
+            if args_cli.eval_ball_obs_noise:
+                actor_obs = obs.clone()
+                # Soccer configurations append target_point_pos followed by
+                # target_destination_pos_local to the policy observation.
+                actor_obs[:, -6:-3] += torch.randn_like(actor_obs[:, -6:-3]) * args_cli.eval_ball_obs_noise
+            actions = policy(actor_obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+        if trials is not None:
+            ball = env.unwrapped.scene["soccer_ball"]
+            current_ball = ball.data.root_pos_w.detach().cpu().numpy().copy()
+            velocity = ball.data.root_lin_vel_w.detach().cpu().numpy().copy()
+            for index, trial in enumerate(trials):
+                trial.observe(previous_ball[index], current_ball[index], velocity[index], goal_center[index], goal_normal[index], 1.0, 0.5)
+            previous_ball = current_ball
+            if args_cli.eval_push_speed and timestep == args_cli.eval_steps // 4:
+                robot = env.unwrapped.scene["robot"]
+                root_velocity = robot.data.root_vel_w.clone()
+                root_velocity[:, 0] += args_cli.eval_push_speed
+                robot.write_root_velocity_to_sim(root_velocity)
+        if tracking is not None:
+            command = env.unwrapped.command_manager.get_term("motion")
+            tracking["policy_body"].append(command.robot_body_pos_w.detach().cpu().numpy().copy())
+            tracking["reference_body"].append(command.body_pos_w.detach().cpu().numpy().copy())
+            tracking["policy_joint"].append(command.robot_joint_pos.detach().cpu().numpy().copy())
+            tracking["reference_joint"].append(command.joint_pos.detach().cpu().numpy().copy())
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
+                break
+        if trials is not None:
+            timestep += 1
+            if timestep >= args_cli.eval_steps:
+                output = args_cli.eval_output or os.path.join(os.path.dirname(resume_path), "evaluation_single.json")
+                with open(output, "w", encoding="utf-8") as stream:
+                    valid = [trial.kick_accuracy_cosine for trial in trials if np.isfinite(trial.kick_accuracy_cosine)]
+                    json.dump({"seed": args_cli.eval_seed, "trials": len(trials), "success_goal_rate": float(np.mean([trial.success for trial in trials])), "first_contact_rate": float(np.mean([trial.contacted for trial in trials])), "kick_accuracy_cosine": float(np.mean(valid)) if valid else None, "kick_accuracy_valid_trials": len(valid), "max_ball_speed": float(np.mean([trial.max_ball_speed for trial in trials]))}, stream, indent=2)
+                print(f"[INFO]: Wrote soccer evaluation to: {output}")
+                break
+        if tracking is not None:
+            timestep += 1
+            if timestep >= args_cli.tracking_eval_steps:
+                output = args_cli.tracking_eval_output or os.path.join(os.path.dirname(resume_path), "tracking_evaluation.json")
+                values = {key: np.stack(sequence, axis=0) for key, sequence in tracking.items()}
+                payload = {
+                    "motion_files": [os.path.basename(path) for path in motion_files],
+                    "metrics": [
+                        evaluate_tracking(
+                            values["policy_body"][:, env_id], values["reference_body"][:, env_id],
+                            values["policy_joint"][:, env_id], values["reference_joint"][:, env_id],
+                        )
+                        for env_id in range(env.unwrapped.num_envs)
+                    ],
+                }
+                with open(output, "w", encoding="utf-8") as stream:
+                    json.dump(payload, stream, indent=2)
+                if args_cli.tracking_trace_output is not None:
+                    if env.unwrapped.num_envs != 1:
+                        raise ValueError("--tracking_trace_output requires --num_envs 1")
+                    np.savez(
+                        args_cli.tracking_trace_output,
+                        **tracking_trace(values["policy_body"][:, 0], values["reference_body"][:, 0]),
+                    )
+                print(f"[INFO]: Wrote R1 tracking evaluation to: {output}")
                 break
 
     # close the simulator

@@ -354,12 +354,14 @@ class MotionCommand(CommandTerm):
 
     @property
     def robot_pelvis_pos_w(self) -> torch.Tensor:
-        pelvis_index = self.robot.body_names.index("pelvis")
+        pelvis_name = "pelvis_link" if "pelvis_link" in self.robot.body_names else "pelvis"
+        pelvis_index = self.robot.body_names.index(pelvis_name)
         return self.robot.data.body_pos_w[:, pelvis_index]
     
     @property
     def robot_pelvis_quat_w(self) -> torch.Tensor:
-        pelvis_index = self.robot.body_names.index("pelvis")
+        pelvis_name = "pelvis_link" if "pelvis_link" in self.robot.body_names else "pelvis"
+        pelvis_index = self.robot.body_names.index(pelvis_name)
         return self.robot.data.body_quat_w[:, pelvis_index]
 
     @property
@@ -536,6 +538,12 @@ class MotionCommand(CommandTerm):
         if ids.numel() == 0:
             return
 
+        if self.cfg.eval_fixed_ball_pos is not None:
+            self.soccer_ball_pos[ids] = torch.tensor(
+                self.cfg.eval_fixed_ball_pos, dtype=torch.float32, device=self.device
+            )
+            return
+
         arc_limit = float(self._target_arc_angle)
         base_height = float(self._target_height)
 
@@ -617,6 +625,15 @@ class MotionCommand(CommandTerm):
         if ids.numel() == 0:
             return
         
+        if self.cfg.eval_fixed_target_destination is not None:
+            destination = torch.tensor(
+                self.cfg.eval_fixed_target_destination, dtype=torch.float32, device=self.device
+            ).expand(ids.numel(), -1)
+            self.target_destination_pos[ids] = destination
+            if self.target_destination_marker is not None:
+                self.target_destination_marker.visualize(destination + self._env.scene.env_origins[ids])
+            return
+
         # Generate target_destination in world coordinates.
         # Sample destination uniformly within the rectangle.
         rand_x = (torch.rand(ids.numel(), device=self.device) - 0.5) * self.destination_length
@@ -650,7 +667,18 @@ class MotionCommand(CommandTerm):
         ball_quat[:, 0] = 1.0
         
         # Sample initial linear velocity based on config.
-        if self.cfg.enable_soccer_ball_init_vel:
+        if self.cfg.eval_ball_speed_range is not None:
+            speed_low, speed_high = self.cfg.eval_ball_speed_range
+            speed = sample_uniform(speed_low, speed_high, (ids.numel(),), device=self.device)
+            angle = sample_uniform(0.0, 2.0 * math.pi, (ids.numel(),), device=self.device)
+            ball_lin_vel = ball_pos.new_zeros((ids.numel(), 3))
+            ball_lin_vel[:, 0] = speed * torch.cos(angle)
+            ball_lin_vel[:, 1] = speed * torch.sin(angle)
+        elif self.cfg.eval_fixed_ball_lin_vel is not None:
+            ball_lin_vel = torch.tensor(
+                self.cfg.eval_fixed_ball_lin_vel, dtype=ball_pos.dtype, device=self.device
+            ).expand(ids.numel(), -1)
+        elif self.cfg.enable_soccer_ball_init_vel:
             lin_vel_range = self.cfg.soccer_ball_init_lin_vel_range or {}
             lin_vel_ranges = torch.tensor(
                 [lin_vel_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z"]],
@@ -706,6 +734,12 @@ class MotionCommand(CommandTerm):
         ranges = torch.tensor(range_list, device=self.device)
         rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device)
         root_pos[env_ids] += rand_samples[:, 0:3]
+        if self.cfg.eval_robot_init_radius is not None:
+            radius = float(self.cfg.eval_robot_init_radius)
+            disk_radius = radius * torch.sqrt(torch.rand(len(env_ids), device=self.device))
+            disk_angle = 2.0 * math.pi * torch.rand(len(env_ids), device=self.device)
+            root_pos[env_ids, 0] += disk_radius * torch.cos(disk_angle)
+            root_pos[env_ids, 1] += disk_radius * torch.sin(disk_angle)
         orientations_delta = quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
         root_ori[env_ids] = quat_mul(orientations_delta, root_ori[env_ids])
         range_list = [self.cfg.velocity_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
@@ -864,6 +898,14 @@ class MotionCommandCfg(CommandTermCfg):
     # Initial soccer-ball velocity configuration.
     enable_soccer_ball_init_vel: bool = False
     soccer_ball_init_lin_vel_range: dict[str, tuple[float, float]] | None = None
+
+    # Optional deterministic values for evaluation. Defaults preserve training
+    # and the existing G1/R1 task sampling behavior.
+    eval_fixed_ball_pos: tuple[float, float, float] | None = None
+    eval_fixed_ball_lin_vel: tuple[float, float, float] | None = None
+    eval_fixed_target_destination: tuple[float, float, float] | None = None
+    eval_robot_init_radius: float | None = None
+    eval_ball_speed_range: tuple[float, float] | None = None
     
     # Blind-zone config: ball is invisible when robot-ball (x, y) distance is outside [min, max].
     blind_distance_min_range: tuple[float, float] = (0.3, 0.5)  # Minimum distance sampling range.
