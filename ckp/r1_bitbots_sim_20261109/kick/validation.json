@@ -1,0 +1,79 @@
+{
+  "torch_version": "2.5.1+cu124",
+  "onnxruntime_version": "1.23.2",
+  "kick": {
+    "exported_onnx_sha256": "0bf72c990d76802f9307745fda63b3334eefcb90b17ca68ef818e33bf4fcfc7b",
+    "evaluated_onnx_sha256": "69ae8548e84605950c55dcf69671e277ebfcb00dc67505bbb7c4814437793446",
+    "byte_identical": false,
+    "torch_reference_samples": 200,
+    "recurrent_replay_steps": 200,
+    "max_absolute_error_vs_torch": {
+      "actions": 2.384185791015625e-06,
+      "h_out": 4.172325134277344e-07,
+      "c_out": 8.940696716308594e-07
+    },
+    "max_absolute_error_vs_evaluated_onnx": {
+      "actions": 0.0,
+      "h_out": 0.0,
+      "c_out": 0.0
+    },
+    "max_absolute_recurrent_error": {
+      "actions": 0.0,
+      "h_out": 0.0,
+      "c_out": 0.0
+    },
+    "inputs": {
+      "obs": [
+        1,
+        143
+      ],
+      "h_in": [
+        2,
+        1,
+        128
+      ],
+      "c_in": [
+        2,
+        1,
+        128
+      ]
+    },
+    "outputs": {
+      "actions": [
+        1,
+        24
+      ],
+      "h_out": [
+        2,
+        1,
+        128
+      ],
+      "c_out": [
+        2,
+        1,
+        128
+      ]
+    },
+    "released_onnx_sha256": "69ae8548e84605950c55dcf69671e277ebfcb00dc67505bbb7c4814437793446",
+    "onnx_graph_identical": true,
+    "differing_onnx_top_level_fields": [
+      "producer_version"
+    ]
+  },
+  "walking": {
+    "onnx_sha256": "40d432fee1f66c1a63cdcb4273d3432501f54e90193dc9b19a7e1d0113c4a1c7",
+    "inputs": {
+      "obs": [
+        1,
+        415
+      ]
+    },
+    "outputs": {
+      "actions": [
+        1,
+        24
+      ]
+    },
+    "finite_cpu_inference_samples": 16
+  }
+}

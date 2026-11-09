@@ -1,0 +1,61 @@
+{
+  "pause_then_play": {
+    "shared_physics_steps": 35000,
+    "shared_control_frames": 1750,
+    "simulation_seconds": 35.0,
+    "healthy_final": 8,
+    "interrobot_contact_samples": 0,
+    "robot_state_resets": 0,
+    "goals": 0,
+    "kick_policy_seconds": 1.42,
+    "physical_ball_contacts": {
+      "t42_r1": {
+        "first_seconds": 14.788999999997243,
+        "samples": 28,
+        "last_seconds": 14.815999999997228
+      },
+      "t43_r4": {
+        "first_seconds": 15.842999999996659,
+        "samples": 178,
+        "last_seconds": 16.16099999999677
+      }
+    },
+    "no_ball_swing_events": 0,
+    "strict_recovery_certified": true,
+    "post_ready_samples": 901,
+    "post_ready_jitter_exceedances": 0,
+    "post_ready_joint_rms_max": 0.004091467158012594
+  },
+  "moving_opponents": {
+    "shared_physics_steps": 35000,
+    "shared_control_frames": 1750,
+    "simulation_seconds": 35.0,
+    "healthy_final": 8,
+    "interrobot_contact_samples": 0,
+    "robot_state_resets": 0,
+    "goals": 0,
+    "kick_policy_seconds": 1.8,
+    "physical_ball_contacts": {
+      "t42_r1": {
+        "first_seconds": 12.887999999998296,
+        "samples": 26,
+        "last_seconds": 12.912999999998283
+      },
+      "t43_r4": {
+        "first_seconds": 13.89099999999774,
+        "samples": 69,
+        "last_seconds": 14.10799999999762
+      },
+      "t43_r3": {
+        "first_seconds": 16.077999999996667,
+        "samples": 59,
+        "last_seconds": 16.135999999996738
+      }
+    },
+    "no_ball_swing_events": 0,
+    "strict_recovery_certified": true,
+    "post_ready_samples": 987,
+    "post_ready_jitter_exceedances": 0,
+    "post_ready_joint_rms_max": 0.05720631942761505
+  }
+}

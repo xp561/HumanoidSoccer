@@ -1,0 +1,28 @@
+{
+  "release": "r1-bitbots-sim-20261109",
+  "scope": "MuJoCo simulation",
+  "kick": {
+    "checkpoint": "continued_control_109995",
+    "checkpoint_file": "model_109995.pt",
+    "checkpoint_sha256": "02e60630665bc7e4d85770ff9e396c39b7839da5748ac80bb636cc608ab62711",
+    "training_run": "2026-10-25_05-32-59_causal_20261024_control_seed20261024",
+    "onnx": "kick/policy.onnx",
+    "onnx_sha256": "69ae8548e84605950c55dcf69671e277ebfcb00dc67505bbb7c4814437793446",
+    "metadata": "kick/metadata.json",
+    "metadata_sha256": "f86063f95acc94e7cf9893aa592c73cd4f083afc08fb4fd536bdf53e056f8175",
+    "control_hz": 50,
+    "runtime": "settled_single_kick_feedback"
+  },
+  "walking": {
+    "checkpoint": "model_10000.pt",
+    "checkpoint_sha256": "6f710098235d4b2a1effcb890246014799d0b33afc1352f9885ce7346588697c",
+    "repository": "https://github.com/pfrangl/freibots_rl_lab",
+    "commit": "1f700a97656577865524b58e6d7df8d4aae5bfaa",
+    "repository_path": "data/checkpoints/r1_velocity/2026-10-22_21-21-33/exported/policy.onnx",
+    "onnx_sha256": "40d432fee1f66c1a63cdcb4273d3432501f54e90193dc9b19a7e1d0113c4a1c7",
+    "deploy_sha256": "80cd9da674209940214f4715714f583715723832ee98d35c6f01f17aa1f32565",
+    "bitbots_runtime_contract_sha256": "cdd0a945d64214a2c23829fe41dafdbabe1f6a1261c78c34e92fd0c1577be3b3",
+    "distribution": "authenticated original repository",
+    "control_hz": 50
+  }
+}
