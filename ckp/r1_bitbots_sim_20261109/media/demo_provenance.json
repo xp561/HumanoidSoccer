@@ -1,0 +1,36 @@
+{
+  "kick_policy_sha256": "69ae8548e84605950c55dcf69671e277ebfcb00dc67505bbb7c4814437793446",
+  "single_robot_case": 2239,
+  "shared_world_scenario": "moving_opponents",
+  "playback_rate": 1,
+  "frames": 400,
+  "fps": 25,
+  "clips": [
+    {
+      "title": "Rolling ball, open goal",
+      "input_start_s": 0.0,
+      "duration_s": 8,
+      "contact_s": 0.5490000000000004,
+      "handoff_s": 1.5799999999999368,
+      "standing_s": 2.6399999999998203,
+      "shot_outcome_s": 1.7179999999999216,
+      "shot_outcome": "goal"
+    },
+    {
+      "title": "Shot against a goalkeeper",
+      "input_start_s": 11.72,
+      "duration_s": 8,
+      "contact_s": 12.887999999998296,
+      "handoff_s": 14.22,
+      "standing_s": 15.280000000000001,
+      "shot_outcome_s": 13.89099999999774,
+      "shot_outcome": "saved"
+    }
+  ],
+  "goal_overlays": "visual only",
+  "physics_state_edits": false,
+  "assets_sha256": {
+    "r1_kick_demo.mp4": "2bc075aaac56b324d9194a1ac7f603dbe6c3938bb42a79f97726aa661dfef1ec",
+    "r1_kick_preview.gif": "2dd39a37af47893175092a891ddd6eaf6b387cfa14f3ebd27f41d77f86f677aa"
+  }
+}
