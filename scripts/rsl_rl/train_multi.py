@@ -27,6 +27,8 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument("--registry_name", type=str, required=False, help="The name of the wand registry.")
 parser.add_argument("--motion_path", type=str, required=True, help="The path to the motion file or directory containing motion files.")
 
+parser.add_argument("--ball_obs_noise_std", type=float, default=None, help="Actor-only Gaussian ball x/y noise standard deviation in meters; omitted preserves the task default.")
+
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -47,6 +49,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import json
 import os
 import glob
 import torch
@@ -67,6 +70,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import soccer.tasks  # noqa: F401
+from soccer.tasks.tracking.mdp.ball_observation_noise import configure_ball_observation_noise
 from soccer.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -121,6 +125,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     env_cfg.commands.motion.motion_files = motion_files
 
+    ball_noise_config = None
+    if args_cli.ball_obs_noise_std is not None:
+        ball_noise_config = configure_ball_observation_noise(env_cfg, args_cli.ball_obs_noise_std)
+
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
@@ -130,6 +138,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
+
+    if ball_noise_config is not None:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "ball_observation_noise.json"), "w") as stream:
+            json.dump(ball_noise_config, stream, indent=2)
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

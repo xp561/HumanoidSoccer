@@ -8,6 +8,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import matrix_from_quat, subtract_frame_transforms, quat_apply, quat_inv
 
 from soccer.tasks.tracking.mdp.commands_multi_motion_soccer import MotionCommand
+from soccer.tasks.tracking.mdp.ball_observation_noise import add_ball_xy_noise, ball_noise_generator, validate_ball_noise_std
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
@@ -164,11 +165,15 @@ def target_point_pos_first_frame(env: ManagerBasedEnv, command_name: str = "moti
     return _positional_encoding(getattr(env, cache_name), num_freqs=6)
 
 
-def constant_target_point_pos(env: ManagerBasedEnv, command_name: str = "motion") -> torch.Tensor:
-    # Constant observation path keeps the same representation as policy inputs.
+def constant_target_point_pos(
+    env: ManagerBasedEnv, command_name: str = "motion", ball_position_noise_std: float = 0.0,
+) -> torch.Tensor:
+    """Return ball position, optionally perturbing actor-frame planar coordinates."""
+    std = validate_ball_noise_std(ball_position_noise_std)
     base = get_target_point_base(env, command_name)
-    return base
-    return _positional_encoding(base, num_freqs=6)
+    if std == 0:
+        return base
+    return add_ball_xy_noise(base, std, ball_noise_generator(env, base))
 
 
 def blind_zone_target_point_pos(env: ManagerBasedEnv, command_name: str = "motion") -> torch.Tensor:

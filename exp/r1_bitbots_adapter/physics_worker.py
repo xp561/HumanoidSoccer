@@ -23,13 +23,17 @@ def serial(value):
 
 
 class Plant:
-    def __init__(self, request):
+    def __init__(self, request, *, model_path=None):
         root = Path.cwd()
         formal = root / "logs/r1_logic_fix/r1_mujoco_formal_20261017"
         self.meta = json.loads((formal / "artifacts/metadata.json").read_text())
         self.protocol = json.loads((formal / "runtime_protocol.json").read_text())
         self.profile = json.loads((formal / "profile.json").read_text())
-        self.robot = Robot(formal / "model.xml", self.meta)
+        self.robot = Robot(formal / "model.xml" if model_path is None else model_path, self.meta)
+        self.walk_contract = None
+        if request.get("walking", False):
+            from .walking_runtime import WalkingRuntime
+            self.walk_contract = WalkingRuntime().contract
         index = request["motion"]
         self.name = self.meta["motion_names"][index]
         with np.load(root / "motions/r1-corrected" / (self.name + ".npz")) as archive:
@@ -84,11 +88,23 @@ class Plant:
             if len(names) != len(set(names)) or set(names) != set(self.meta["action_joint_names"]):
                 raise ValueError("Command does not cover action joints exactly")
             order = [names.index(name) for name in self.meta["action_joint_names"]]
-            for key, metadata_key in (("kp", "stiffness"), ("kd", "damping"), ("max_torques", "effort_limits")):
-                actual = np.asarray(request[key], float)[order]
-                expected = np.asarray(self.meta[metadata_key])[self.meta["action_joint_ids"]]
-                if not np.array_equal(actual, expected):
-                    raise ValueError("Plant/controller gain or effort contract mismatch: " + key)
+            profiles = [dict(kp=np.asarray(self.meta["stiffness"])[self.meta["action_joint_ids"]],
+                             kd=np.asarray(self.meta["damping"])[self.meta["action_joint_ids"]],
+                             max_torques=np.asarray(self.meta["effort_limits"])[self.meta["action_joint_ids"]])]
+            if self.walk_contract is not None:
+                c = self.walk_contract
+                walk_order = [c["joint_names"].index(n) for n in self.meta["action_joint_names"]]
+                profiles.append({key:np.asarray(c[field])[walk_order] for key,field in
+                                 (("kp","kp"),("kd","kd"),("max_torques","effort_limit"))})
+            actual = {key:np.asarray(request[key], float)[order] for key in profiles[0]}
+            if not any(all(np.array_equal(actual[key], profile[key]) for key in profile) for profile in profiles):
+                raise ValueError("Plant/controller gain or effort contract mismatch")
+            ids = robot.action_ids
+            robot.model.actuator_gainprm[ids, 0] = actual["kp"]
+            robot.model.actuator_biasprm[ids, 1] = -actual["kp"]
+            robot.model.actuator_biasprm[ids, 2] = -actual["kd"]
+            robot.model.actuator_forcerange[ids, 0] = -actual["max_torques"]
+            robot.model.actuator_forcerange[ids, 1] = actual["max_torques"]
             target = np.asarray(request["positions"], float)
             if target.shape != (len(order),) or not np.isfinite(target).all():
                 raise ValueError("Invalid targets")
@@ -99,6 +115,7 @@ class Plant:
             mujoco.mjtWarning.mjWARN_BADQVEL,
             mujoco.mjtWarning.mjWARN_BADQACC,
         ]
+        observer = getattr(self, "physics_observer", None)
         for _ in range(self.substeps):
             before = robot.data.qpos[robot.ball_q : robot.ball_q + 3].copy()
             counts = [robot.data.warning[w].number for w in bad_warnings]
@@ -110,6 +127,8 @@ class Plant:
             ):
                 raise RuntimeError("Numerically invalid physical step")
             after = robot.data.qpos[robot.ball_q : robot.ball_q + 3].copy()
+            if observer is not None:
+                observer(before, after, float(robot.data.time))
             velocity = robot.data.qvel[robot.ball_v : robot.ball_v + 3].copy()
             buffer.append((before, after, velocity, foot_contact(robot), float(robot.data.time)))
         mujoco.mj_forward(robot.model, robot.data)

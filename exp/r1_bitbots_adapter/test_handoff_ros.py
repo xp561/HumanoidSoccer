@@ -147,6 +147,19 @@ class TestOwnershipROS(unittest.TestCase):
         self.assertEqual(len(self.router.forwarded),6)
         self.assertEqual(len(self.router.rejected),30)
 
+    def test_available_walker_has_one_output_in_every_phase(self):
+        with self.router.lock:
+            self.router.gate.walker_available=True
+        self.bombard()
+        token=self.router.begin_transaction()
+        for phase in (Phase.STOPPING,Phase.PREPARING,Phase.KICKING,Phase.RECOVERING):
+            self.bombard()
+            self.assertTrue(self.router.acknowledge_phase(phase,token))
+        self.bombard()
+        self.assertEqual(self.router.gate.owner,"walk")
+        self.assertEqual(len(self.router.forwarded),6)
+        self.assertEqual(len(self.router.rejected),30)
+
     def test_delayed_previous_phase_packet_dropped(self):
         old=self.message()
         token=self.router.begin_transaction()

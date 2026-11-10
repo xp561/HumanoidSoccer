@@ -1,0 +1,24 @@
+body:
+  r1:
+    warmup_seconds: 3.0
+    approach_distance: 0.75
+    approach_position_tolerance: 0.025
+    approach_yaw_tolerance: 0.02
+    approach_dwell: 0.2
+    ball_max_age: 0.25
+    search_yaw_speed: 0.15
+  rl_kick:
+    strength_mode: fixed
+    timeout: -1.0
+navigation:
+  rate: 50.0
+  map.ball_diameter: 0.22
+  map.planning_frame: map
+  controller.max_vel_x: 0.2
+  controller.min_vel_x: -0.1
+  controller.max_vel_y: 0.1
+  controller.max_rotation_vel: 0.3
+  controller.orient_to_goal_distance: 2.0
+  controller.translation_slow_down_factor: 1.5
+  controller.rotation_slow_down_factor: 3.0
+  controller.rotation_i_factor: 0.0

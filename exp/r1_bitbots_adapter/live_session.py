@@ -35,7 +35,9 @@ from .ros_node import KickNode, forward_rotate
 
 
 class Session:
-    def __init__(self, output, *, realtime=True, render=True, config=None, joint_offset=0.0):
+    def __init__(
+        self, output, *, realtime=True, render=True, config=None, joint_offset=0.0
+    ):
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.config = config or ReadinessConfig()
@@ -58,8 +60,12 @@ class Session:
         self.plant = None
 
     def setup(self, *, rolling=False):
-        self.adapter = KickNode(parameter_overrides=[Parameter("use_sim_time", value=True)])
-        self.router = OwnershipRouter(parameter_overrides=[Parameter("use_sim_time", value=True)])
+        self.adapter = KickNode(
+            parameter_overrides=[Parameter("use_sim_time", value=True)]
+        )
+        self.router = OwnershipRouter(
+            parameter_overrides=[Parameter("use_sim_time", value=True)]
+        )
         self.bridge = Bridge(self.adapter, command_topic="leased_motor_goals")
         self.executor = SingleThreadedExecutor()
         for node in (self.adapter, self.router, self.bridge):
@@ -74,7 +80,9 @@ class Session:
             )
         }
         self.kick_commands = []
-        self.bridge.create_subscription(JointCommand, "kick_motor_goals", self.kick_commands.append, 100)
+        self.bridge.create_subscription(
+            JointCommand, "kick_motor_goals", self.kick_commands.append, 100
+        )
         self.reset(rolling=rolling)
 
     def reset(self, *, rolling=False):
@@ -85,28 +93,41 @@ class Session:
         # Restart the world only on an explicit new-trial reset.
         self.plant = PlantClient(
             dict(
+                walking=getattr(self, "enable_walking", False),
+                ball_offset=getattr(self, "ball_offset", [0.0, 0.0]),
                 motion=0,
                 ball_velocity=[0.2, 0.0, 0.0] if rolling else [0.0, 0.0, 0.0],
                 initial_joint_offset=self.joint_offset,
+                **getattr(self, "worker_options", {}),
             ),
             self.output / "worker.log",
-            worker_module="exp.r1_bitbots_adapter.live_worker",
+            worker_module=getattr(
+                self, "worker_module", "exp.r1_bitbots_adapter.live_worker"
+            ),
         )
         self.state = state_arrays(self.plant.initial)
         self.measured = self.plant.initial["diagnostics"]
         self.ns = max(getattr(self, "ns", 0), 1_000_000)
-        self.nominal = self.adapter.references[0].data["joint_pos"][0, self.adapter.runtime.ids].copy()
+        self.nominal = (
+            self.adapter.references[0]
+            .data["joint_pos"][0, self.adapter.runtime.ids]
+            .copy()
+        )
         self.target = self.state["joint_pos"][self.adapter.runtime.ids].copy()
         self.posture = self.target.copy()
         self.capture_balance = True
         self.nominal_height = float(
-            self.adapter.references[0].data["body_pos_w"][0, self.adapter.references[0].root, 2]
+            self.adapter.references[0].data["body_pos_w"][
+                0, self.adapter.references[0].root, 2
+            ]
         )
         from .handoff import Handoff
 
         self.router.gate = Handoff(
             phase_timeout=max(
-                self.config.preparation_timeout, self.config.recovery_timeout, self.adapter.cfg["execution_seconds"]
+                self.config.preparation_timeout,
+                self.config.recovery_timeout,
+                self.adapter.cfg["execution_seconds"],
             )
             + 2.0
         )
@@ -134,7 +155,11 @@ class Session:
         sensor_barrier(self.executor, self.adapter, self.ns, owner=owner)
         self.bridge.clock(self.ns)
         spin_until(
-            self.executor, lambda: all(n.get_clock().now().nanoseconds == self.ns for n in (self.adapter, self.router))
+            self.executor,
+            lambda: all(
+                n.get_clock().now().nanoseconds == self.ns
+                for n in (self.adapter, self.router)
+            ),
         )
 
     def update_view(self, *, force=False):
@@ -147,14 +172,17 @@ class Session:
         with self.lock:
             self.status = dict(
                 stage=self.stage,
-                busy=self.control_pending or self.stage in ("stopping", "preparing", "kicking", "recovering"),
+                busy=self.control_pending
+                or self.stage in ("stopping", "preparing", "kicking", "recovering"),
                 owner=self.router.gate.owner,
                 reason=self.reason,
                 outcome=self.outcome,
                 simulation_seconds=round(self.seconds, 3),
                 diagnostics=self.measured,
                 readiness_reasons=[] if self.monitor is None else self.monitor.reasons,
-                stable_seconds=0.0 if self.monitor is None else round(self.monitor.elapsed, 3),
+                stable_seconds=0.0
+                if self.monitor is None
+                else round(self.monitor.elapsed, 3),
                 required_stable_seconds=self.config.dwell,
                 direction_body=[1.0, 0.0],
                 goal_world=self.goal,
@@ -196,7 +224,15 @@ class Session:
 
     def controlled_step(self, source, target):
         if source != "hcm":
-            planned = self.plant.rpc(dict(op="plan", posture=np.asarray(target).tolist(), capture=self.capture_balance))
+            planned = self.plant.rpc(
+                dict(
+                    op="plan",
+                    posture=np.asarray(target).tolist(),
+                    capture=self.capture_balance,
+                    align_reference=getattr(self, "enable_walking", False)
+                    and self.stage == "preparing",
+                )
+            )
             self.capture_balance = False
             target = planned["positions"]
         self.sync(owner=False)
@@ -244,10 +280,21 @@ class Session:
                     self.config.joint_rate * self.adapter.runtime.dt,
                 )
             self.controlled_step(self.router.gate.owner, self.posture.copy())
-            if self.terminal_kick_count is not None and len(self.kick_commands) != self.terminal_kick_count:
+            if (
+                self.terminal_kick_count is not None
+                and len(self.kick_commands) != self.terminal_kick_count
+            ):
                 return "policy_command_after_terminal_result"
-            error = float(np.max(np.abs(self.state["joint_pos"][self.adapter.runtime.ids] - self.nominal)))
-            if self.monitor.update(self.seconds, self.measured, pose_error=error if preparation else None):
+            error = float(
+                np.max(
+                    np.abs(
+                        self.state["joint_pos"][self.adapter.runtime.ids] - self.nominal
+                    )
+                )
+            )
+            if self.monitor.update(
+                self.seconds, self.measured, pose_error=error if preparation else None
+            ):
                 return None
         return (
             "stopping_timeout"
@@ -257,8 +304,9 @@ class Session:
             else "recovery_timeout"
         )
 
-    def shot(self):
-        self.cancel.clear()
+    def shot(self, *, preserve_cancel=False):
+        if not preserve_cancel:
+            self.cancel.clear()
         self.events, self.phase_trace = [], []
         self.shot_kick_start = len(self.kick_commands)
         self.terminal_kick_count = None
@@ -268,11 +316,17 @@ class Session:
         self.posture = self.target.copy()
         self.capture_balance = True
         self.event("stopping", "waiting for measured standstill")
-        failure = self.wait_ready(preparation=False, timeout=self.config.preparation_timeout, interruptible=True)
+        failure = self.wait_ready(
+            preparation=False,
+            timeout=self.config.preparation_timeout,
+            interruptible=True,
+        )
         if failure is None and not self.cancel.is_set():
             self.router.gate.acknowledge(Phase.STOPPING, generation, self.ns)
             self.event("preparing", "converging to the policy startup pose")
-            failure = self.wait_ready(preparation=True, timeout=self.config.preparation_timeout)
+            failure = self.wait_ready(
+                preparation=True, timeout=self.config.preparation_timeout
+            )
         elif self.cancel.is_set():
             failure = "cancelled"
         if failure is not None:
@@ -285,20 +339,27 @@ class Session:
             generation = self.router.gate.recover_fault(self.ns)
         else:
             self.router.gate.acknowledge(Phase.PREPARING, generation, self.ns)
-            self.event("kicking", "fixed-policy Action; completion does not imply recovery")
+            self.event(
+                "kicking", "fixed-policy Action; completion does not imply recovery"
+            )
             failure = self.execute_kick()
             self.outcome = failure or "policy_completed"
             if self.router.gate.phase == Phase.FAULT:
                 self.fault(self.router.gate.reason)
                 self.save_report(False)
                 return
-            self.router.gate.acknowledge(Phase.KICKING, generation, self.ns, outcome=self.outcome)
-        self.target = self.state["joint_pos"][self.adapter.runtime.ids].copy()
-        self.posture = self.target.copy() if self.outcome == "policy_completed" else self.nominal.copy()
-        self.capture_balance = self.outcome == "policy_completed"
+            self.router.gate.acknowledge(
+                Phase.KICKING, generation, self.ns, outcome=self.outcome
+            )
+        self.configure_recovery()
         self.plant.rpc(dict(op="end_policy"))
-        self.event("recovering", "balance feedback from terminal pose; checking sustained support")
-        failure = self.wait_ready(preparation=False, timeout=self.config.recovery_timeout)
+        self.event(
+            "recovering",
+            "balance feedback from terminal pose; checking sustained support",
+        )
+        failure = self.wait_ready(
+            preparation=False, timeout=self.config.recovery_timeout
+        )
         if failure is not None:
             self.fault(failure)
             self.save_report(False)
@@ -306,6 +367,15 @@ class Session:
         self.router.gate.acknowledge(Phase.RECOVERING, generation, self.ns)
         self.event("ready", "measured stable recovery; hold owner only")
         self.save_report(True)
+
+    def configure_recovery(self):
+        self.target = self.state["joint_pos"][self.adapter.runtime.ids].copy()
+        self.posture = (
+            self.target.copy()
+            if self.outcome == "policy_completed"
+            else self.nominal.copy()
+        )
+        self.capture_balance = self.outcome == "policy_completed"
 
     def execute_kick(self):
         self.sync(owner=True)
@@ -329,7 +399,9 @@ class Session:
             if not capsule.start_rl_kick(float(np.degrees(yaw))):
                 return capsule.last_rl_kick_error or "request_failed"
             spin_until(
-                self.executor, lambda: capsule._rl_kick_goal_handle is not None or not capsule.is_currently_kicking
+                self.executor,
+                lambda: capsule._rl_kick_goal_handle is not None
+                or not capsule.is_currently_kicking,
             )
             handle = capsule._rl_kick_goal_handle
             if handle is None:
@@ -338,7 +410,11 @@ class Session:
             while not self.shutdown.is_set():
                 if self.cancel.is_set() or self.unsafe():
                     capsule.stop_rl_kick()
-                spin_until(self.executor, lambda before=before: len(self.bridge.commands) > before or future.done())
+                spin_until(
+                    self.executor,
+                    lambda before=before: len(self.bridge.commands) > before
+                    or future.done(),
+                )
                 if future.done():
                     break
                 if len(self.bridge.commands) != before + 1:
@@ -417,7 +493,11 @@ class Session:
                     request = None
                 if request and request["op"] == "reset":
                     self.reset(rolling=request.get("rolling", False))
-                elif request and request["op"] == "start" and self.stage in ("idle", "ready"):
+                elif (
+                    request
+                    and request["op"] == "start"
+                    and self.stage in ("idle", "ready")
+                ):
                     self.shot()
                 else:
                     if self.stage in ("idle", "ready") and self.unsafe():
@@ -427,7 +507,11 @@ class Session:
                     self.control_pending = False
                 # Long-running viewing must not retain an unbounded ROS command history.
                 if self.stage != "kicking":
-                    for history in (self.bridge.commands, self.router.forwarded, self.router.rejected):
+                    for history in (
+                        self.bridge.commands,
+                        self.router.forwarded,
+                        self.router.rejected,
+                    ):
                         if len(history) > 512:
                             del history[:-128]
         except Exception as error:
@@ -445,7 +529,9 @@ class Session:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=Path("logs/r1_logic_fix/r1_live"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("logs/r1_logic_fix/r1_live")
+    )
     parser.add_argument("--port", type=int, default=8877)
     args = parser.parse_args()
     from .live_web import serve

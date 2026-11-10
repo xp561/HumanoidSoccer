@@ -25,6 +25,7 @@ from isaaclab.utils.math import (
 )
 
 from .kick_detection import KickContactTracker
+from .initial_position_curriculum import linear_initial_position_radius
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -178,6 +179,16 @@ class MotionCommand(CommandTerm):
         )
 
         self.motion = MultiMotionLoader(self.cfg.motion_files, self.body_indexes, device=self.device)
+        motion_ids = torch.arange(self.motion.num_files, device=self.device)
+        first_anchor_pos = self.motion._body_pos_w[:, 0, self.motion_anchor_body_index]
+        last_anchor_pos = self.motion._body_pos_w[
+            motion_ids, self.motion.file_lengths - 1, self.motion_anchor_body_index
+        ]
+        first_anchor_quat = self.motion._body_quat_w[:, 0, self.motion_anchor_body_index]
+        self.motion_local_displacement_xy = quat_apply(
+            quat_inv(first_anchor_quat), last_anchor_pos - first_anchor_pos
+        )[:, :2]
+        self.motion_nominal_ball_xy = last_anchor_pos[:, :2]
         kick_leg_to_id = {"left": 0, "right": 1}
         self._kick_leg_id_to_name = {v: k for k, v in kick_leg_to_id.items()}
         self._kick_leg_id_to_name[-1] = "unknown"
@@ -527,6 +538,17 @@ class MotionCommand(CommandTerm):
         time_phase = torch.zeros(len(env_ids), device=self.device)
 
         self.time_steps[env_ids] = (time_phase * (self.motion_length[env_ids].float() - 1)).long()
+
+    def _select_motion_for_eval_ball(self, env_ids: Sequence[int] | torch.Tensor):
+        """Compare the ball and training nominal positions in the same environment frame."""
+        ids = self._to_env_id_tensor(env_ids)
+        ball_env_xy = self.soccer_ball_pos[ids, :2]
+        errors = torch.linalg.vector_norm(
+            ball_env_xy[:, None, :] - self.motion_nominal_ball_xy[None, :, :], dim=-1
+        )
+        self.motion_idx[ids] = torch.argmin(errors, dim=1)
+        self.motion_length[ids] = self.motion.file_lengths[self.motion_idx[ids]]
+        self.time_steps[ids] = 0
         
 
     def _compute_soccer_ball_positions(self, env_ids: Sequence[int] | torch.Tensor):
@@ -706,7 +728,10 @@ class MotionCommand(CommandTerm):
 
         self._sample_soccer_offset(env_ids)
         sampling_strategy = str(self.cfg.sampling_strategy).lower()
-        if sampling_strategy == "adaptive":
+        if self.cfg.eval_match_motion_to_ball and self.cfg.eval_fixed_ball_pos is not None:
+            self._compute_soccer_ball_positions(env_ids)
+            self._select_motion_for_eval_ball(env_ids)
+        elif sampling_strategy == "adaptive":
             self._adaptive_sampling(env_ids)
         elif sampling_strategy == "uniform":
             self._uniform_sampling(env_ids)
@@ -730,12 +755,32 @@ class MotionCommand(CommandTerm):
         root_lin_vel = self.body_lin_vel_w[:, 0].clone()
         root_ang_vel = self.body_ang_vel_w[:, 0].clone()
 
+        use_init_curriculum = (
+            getattr(self.cfg, "train_init_position_curriculum", False)
+            and self.cfg.eval_robot_init_radius is None
+        )
         range_list = [self.cfg.pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
         ranges = torch.tensor(range_list, device=self.device)
         rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device)
+        if use_init_curriculum:
+            # Replace planar box noise with the scheduled disk perturbation.
+            rand_samples[:, :2] = 0
         root_pos[env_ids] += rand_samples[:, 0:3]
-        if self.cfg.eval_robot_init_radius is not None:
-            radius = float(self.cfg.eval_robot_init_radius)
+        if self.cfg.eval_robot_init_radius is not None or use_init_curriculum:
+            if self.cfg.eval_robot_init_radius is not None:
+                radius = float(self.cfg.eval_robot_init_radius)
+            else:
+                radius = linear_initial_position_radius(
+                    self._env.common_step_counter,
+                    self.cfg.train_init_radius_start,
+                    self.cfg.train_init_radius_end,
+                    self.cfg.train_init_ramp_steps,
+                )
+                if "initial_position_radius" not in self.metrics:
+                    self.metrics["initial_position_radius"] = torch.zeros(
+                        self.num_envs, device=self.device
+                    )
+                self.metrics["initial_position_radius"][env_ids] = radius
             disk_radius = radius * torch.sqrt(torch.rand(len(env_ids), device=self.device))
             disk_angle = 2.0 * math.pi * torch.rand(len(env_ids), device=self.device)
             root_pos[env_ids, 0] += disk_radius * torch.cos(disk_angle)
@@ -771,6 +816,7 @@ class MotionCommand(CommandTerm):
             resample_flags = resample_flags.to(device=self.device, dtype=torch.bool)
         resample_flags[env_ids] = True
         setattr(self._env, flag_name, resample_flags)
+        self._update_motion_alignment()
 
     # Called every step in the IsaacLab main loop.
     def _update_command(self):
@@ -779,8 +825,11 @@ class MotionCommand(CommandTerm):
         self.time_steps += 1
         # env_ids = torch.where(self.time_steps >= self.motion.time_step_total)[0]
         env_ids = torch.where(self.time_steps >= self.motion_length)[0]
-        self._resample_command(env_ids)
-        
+        if self.cfg.eval_single_attempt:
+            self.time_steps.copy_(torch.minimum(self.time_steps, self.motion_length - 1))
+        else:
+            self._resample_command(env_ids)
+
         # Update target point each step using current ball position.
         self._update_target_points_from_sim()
 
@@ -791,6 +840,15 @@ class MotionCommand(CommandTerm):
             if torch.any(no_contact_mask):
                 self.initial_target_point_pos[no_contact_mask] = self.target_point_pos[no_contact_mask]
 
+        self._update_motion_alignment()
+
+        self.bin_failed_count = (
+            self.cfg.adaptive_alpha * self._current_bin_failed + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
+        )
+        self._current_bin_failed.zero_()
+
+    def _update_motion_alignment(self):
+        """Refresh reference poses at reset before termination terms can read them."""
         anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
         anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
         robot_anchor_pos_w_repeat = self.robot_anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
@@ -802,11 +860,6 @@ class MotionCommand(CommandTerm):
 
         self.body_quat_relative_w = quat_mul(delta_ori_w, self.body_quat_w)
         self.body_pos_relative_w = delta_pos_w + quat_apply(delta_ori_w, self.body_pos_w - anchor_pos_w_repeat)
-
-        self.bin_failed_count = (
-            self.cfg.adaptive_alpha * self._current_bin_failed + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
-        )
-        self._current_bin_failed.zero_()
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
@@ -905,7 +958,15 @@ class MotionCommandCfg(CommandTermCfg):
     eval_fixed_ball_lin_vel: tuple[float, float, float] | None = None
     eval_fixed_target_destination: tuple[float, float, float] | None = None
     eval_robot_init_radius: float | None = None
+
+    # Opt-in training curriculum; evaluation radius takes precedence.
+    train_init_position_curriculum: bool = False
+    train_init_radius_start: float = 0.05
+    train_init_radius_end: float = 0.5
+    train_init_ramp_steps: int = 24000
     eval_ball_speed_range: tuple[float, float] | None = None
+    eval_match_motion_to_ball: bool = False
+    eval_single_attempt: bool = False
     
     # Blind-zone config: ball is invisible when robot-ball (x, y) distance is outside [min, max].
     blind_distance_min_range: tuple[float, float] = (0.3, 0.5)  # Minimum distance sampling range.

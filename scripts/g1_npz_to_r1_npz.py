@@ -46,47 +46,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
 from soccer.robots.r1 import R1_CYLINDER_CFG
 
-
-# This is the order written by csv_to_npz.py and pkl_to_npz.py for G1.
-G1_JOINT_NAMES = (
-    "left_hip_pitch_joint",
-    "left_hip_roll_joint",
-    "left_hip_yaw_joint",
-    "left_knee_joint",
-    "left_ankle_pitch_joint",
-    "left_ankle_roll_joint",
-    "right_hip_pitch_joint",
-    "right_hip_roll_joint",
-    "right_hip_yaw_joint",
-    "right_knee_joint",
-    "right_ankle_pitch_joint",
-    "right_ankle_roll_joint",
-    "waist_yaw_joint",
-    "waist_roll_joint",
-    "waist_pitch_joint",
-    "left_shoulder_pitch_joint",
-    "left_shoulder_roll_joint",
-    "left_shoulder_yaw_joint",
-    "left_elbow_joint",
-    "left_wrist_roll_joint",
-    "left_wrist_pitch_joint",
-    "left_wrist_yaw_joint",
-    "right_shoulder_pitch_joint",
-    "right_shoulder_roll_joint",
-    "right_shoulder_yaw_joint",
-    "right_elbow_joint",
-    "right_wrist_roll_joint",
-    "right_wrist_pitch_joint",
-    "right_wrist_yaw_joint",
-)
-
-# R1 shares these 24 controllable joints.  The R1 head joints remain at their
-# zero default state and are still recorded in the 26-dimensional archive.
-R1_CONTROLLED_JOINT_NAMES = tuple(
-    name
-    for name in G1_JOINT_NAMES
-    if name not in {"waist_pitch_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint"}
-)
+from motion_archive import R1_CONTROLLED_JOINT_NAMES, load_g1_motion, source_joint_indices, validate_joint_limits
 
 
 @configclass
@@ -109,20 +69,7 @@ def collect_inputs() -> list[Path]:
 
 
 def load_motion(path: Path) -> dict[str, np.ndarray]:
-    with np.load(path, allow_pickle=False) as archive:
-        required = {"fps", "joint_pos", "joint_vel", "body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w"}
-        missing = required.difference(archive.files)
-        if missing:
-            raise ValueError(f"{path} is missing required fields: {sorted(missing)}")
-        motion = {name: archive[name] for name in required}
-
-    if motion["joint_pos"].ndim != 2 or motion["joint_pos"].shape[1] != len(G1_JOINT_NAMES):
-        raise ValueError(f"{path} must contain {len(G1_JOINT_NAMES)} G1 joint positions per frame")
-    if motion["joint_vel"].shape != motion["joint_pos"].shape:
-        raise ValueError(f"{path} has incompatible joint velocity shape")
-    if motion["body_pos_w"].ndim != 3 or motion["body_pos_w"].shape[1:] != (30, 3):
-        raise ValueError(f"{path} must contain the 30-body G1 state written by the existing exporter")
-    return motion
+    return load_g1_motion(path)
 
 
 def convert_motion(
@@ -130,7 +77,6 @@ def convert_motion(
     scene: InteractiveScene,
     path: Path,
     output_path: Path,
-    source_joint_indices: torch.Tensor,
     target_joint_indices: torch.Tensor,
 ) -> None:
     motion = load_motion(path)
@@ -142,6 +88,11 @@ def convert_motion(
 
     source_joint_pos = torch.as_tensor(motion["joint_pos"], device=sim.device, dtype=torch.float32)
     source_joint_vel = torch.as_tensor(motion["joint_vel"], device=sim.device, dtype=torch.float32)
+    source_indices = torch.tensor(
+        source_joint_indices(motion, R1_CONTROLLED_JOINT_NAMES), dtype=torch.long, device=sim.device
+    )
+    limits = robot.data.joint_pos_limits[0, target_joint_indices].cpu().numpy()
+    validate_joint_limits(motion["joint_pos"][:, source_indices.cpu().numpy()], limits, R1_CONTROLLED_JOINT_NAMES)
     source_root_pos = torch.as_tensor(motion["body_pos_w"][:, 0], device=sim.device, dtype=torch.float32)
     source_root_quat = torch.as_tensor(motion["body_quat_w"][:, 0], device=sim.device, dtype=torch.float32)
     source_root_lin_vel = torch.as_tensor(motion["body_lin_vel_w"][:, 0], device=sim.device, dtype=torch.float32)
@@ -153,6 +104,7 @@ def convert_motion(
         # requiring downstream checks to infer it from the URDF.
         "joint_names": np.asarray(robot.joint_names),
         "body_names": np.asarray(robot.body_names),
+        "kick_leg": motion["kick_leg"],
         "joint_pos": [],
         "joint_vel": [],
         "body_pos_w": [],
@@ -173,8 +125,8 @@ def convert_motion(
 
         joint_pos = robot.data.default_joint_pos.clone()
         joint_vel = robot.data.default_joint_vel.clone()
-        joint_pos[:, target_joint_indices] = source_joint_pos[frame_idx, source_joint_indices]
-        joint_vel[:, target_joint_indices] = source_joint_vel[frame_idx, source_joint_indices]
+        joint_pos[:, target_joint_indices] = source_joint_pos[frame_idx, source_indices]
+        joint_vel[:, target_joint_indices] = source_joint_vel[frame_idx, source_indices]
         robot.write_joint_state_to_sim(joint_pos, joint_vel)
         scene.write_data_to_sim()
         sim.render()
@@ -206,10 +158,6 @@ def main() -> None:
     sim.reset()
     robot: Articulation = scene["robot"]
 
-    source_index_by_name = {name: index for index, name in enumerate(G1_JOINT_NAMES)}
-    source_joint_indices = torch.tensor(
-        [source_index_by_name[name] for name in R1_CONTROLLED_JOINT_NAMES], dtype=torch.long, device=sim.device
-    )
     target_joint_indices = torch.tensor(
         robot.find_joints(list(R1_CONTROLLED_JOINT_NAMES), preserve_order=True)[0], dtype=torch.long, device=sim.device
     )
@@ -224,7 +172,6 @@ def main() -> None:
             scene,
             input_path,
             args_cli.output_dir / f"{output_name}.npz",
-            source_joint_indices,
             target_joint_indices,
         )
 

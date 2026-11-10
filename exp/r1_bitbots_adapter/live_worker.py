@@ -17,8 +17,8 @@ from .physics_worker import Plant, serial
 
 
 class LivePlant(Plant):
-    def __init__(self, request):
-        super().__init__(request)
+    def __init__(self, request, *, model_path=None):
+        super().__init__(request, model_path=model_path)
         self.renderer = None
         self.policy_active = False
         self.robot.model.vis.headlight.ambient[:] = [0.6, 0.6, 0.6]
@@ -49,6 +49,19 @@ class LivePlant(Plant):
 
         if request.get("capture") or not hasattr(self, "balance"):
             self.balance = BalancePlanner(self)
+        if request.get("align_reference", False):
+            if self.walk_contract is None:
+                raise ValueError("Reference alignment requires opt-in walking session")
+            self.balance.orientation = self.motion["body_quat_w"][0, self.root_id].copy()
+            # A separate kinematic data buffer sets desired foot headings only.
+            # The live plant generalized coordinates are never overwritten here.
+            target_data = mujoco.MjData(self.robot.model)
+            target_data.qpos[:] = self.robot.data.qpos
+            target_data.qpos[self.robot.qpos_ids] = self.motion["joint_pos"][0]
+            target_data.qpos[self.robot.root_q+3:self.robot.root_q+7] = self.balance.orientation
+            mujoco.mj_forward(self.robot.model, target_data)
+            for i, foot in enumerate(self.balance.feet):
+                self.balance.rotations[i] = self.balance.upright(target_data.xquat[foot])
         return self.balance.target(request["posture"])
 
     def diagnostics(self):

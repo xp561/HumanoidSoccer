@@ -27,21 +27,26 @@ parser.add_argument("--motion_path", type=str, default=None, help="The path to t
 parser.add_argument("--export_motion_name", type=str, default=None, help="Select one motion for exporter (required when --motion_file is used).")
 parser.add_argument("--eval_steps", type=int, default=0, help="Run a bounded soccer evaluation and write one JSON summary; 0 disables evaluation.")
 parser.add_argument("--eval_output", type=str, default=None, help="Path for the optional soccer evaluation JSON summary.")
+parser.add_argument("--eval_goal_width", type=float, default=1.0, help="Goal width used by the soccer evaluation.")
 parser.add_argument("--eval_ball_forward", type=float, default=None, help="Fixed ball forward distance for evaluation, in meters.")
 parser.add_argument("--eval_ball_lateral", type=float, default=0.0, help="Fixed ball lateral offset for evaluation, in meters.")
 parser.add_argument("--eval_ball_speed", type=float, default=0.0, help="Fixed initial ball speed for evaluation, in m/s.")
 parser.add_argument("--eval_ball_direction_deg", type=float, default=0.0, help="Initial ball direction: 0 points toward the goal.")
 parser.add_argument("--eval_ground_friction", type=float, default=None, help="Override ground friction for evaluation before simulation starts.")
 parser.add_argument("--eval_ground_restitution", type=float, default=None, help="Override ground restitution for evaluation before simulation starts.")
-parser.add_argument("--eval_ball_obs_noise", type=float, default=0.0, help="Gaussian standard deviation applied only to the observed ball target position.")
+parser.add_argument("--eval_ball_obs_noise", type=float, default=0.0, help="Legacy alias for --ball_obs_noise_std; applies only to actor ball x/y.")
 parser.add_argument("--eval_initial_yaw_deg", type=float, default=None, help="Fixed initial yaw offset for evaluation, in degrees.")
 parser.add_argument("--eval_push_speed", type=float, default=0.0, help="One-time lateral root-velocity perturbation for evaluation, in m/s.")
 parser.add_argument("--eval_seed", type=int, default=None, help="Deterministic seed for one evaluation trial.")
 parser.add_argument("--eval_robot_init_radius", type=float, default=None, help="Sample the robot initial xy position uniformly in this-radius disk.")
 parser.add_argument("--eval_ball_speed_range", nargs=2, type=float, default=None, metavar=("MIN", "MAX"), help="Independently sample each environment's ball speed uniformly in [MIN, MAX].")
+parser.add_argument("--eval_match_motion_to_ball", action="store_true", help="Select the nearest reference motion for each fixed ball position, matching the original MuJoCo evaluator.")
+parser.add_argument("--eval_paper_protocol", action="store_true", help="Disable training-time state and dynamics randomization for paper-style evaluation.")
 parser.add_argument("--tracking_eval_steps", type=int, default=0, help="Collect body/joint tracking metrics for this many policy steps; 0 disables it.")
 parser.add_argument("--tracking_eval_output", type=str, default=None, help="Write per-environment R1 tracking metrics as JSON after --tracking_eval_steps.")
 parser.add_argument("--tracking_trace_output", type=str, default=None, help="Optional .npz path for per-frame tracking diagnostics (single environment only).")
+
+parser.add_argument("--ball_obs_noise_std", type=float, default=None, help="Actor-only Gaussian ball x/y noise standard deviation in meters; omitted preserves the task default.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -84,8 +89,9 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import soccer.tasks  # noqa: F401
+from soccer.tasks.tracking.mdp.ball_observation_noise import configure_ball_observation_noise
 from soccer.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
-from r1_eval_metrics import KickTrial
+from r1_eval_metrics import KickTrial, goal_plane_normal
 from r1_tracking_metrics import evaluate_tracking, tracking_trace
 
 def get_motion_files(motion_path: str) -> list[str]:
@@ -119,6 +125,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Play with RSL-RL agent."""
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    # Observation dimensions are probed while gym.make loads managers, before
+    # the later explicit reset. Seed their noise streams before construction.
+    env_cfg.seed = args_cli.eval_seed if args_cli.eval_seed is not None else agent_cfg.seed
+
+    if args_cli.eval_steps:
+        if args_cli.eval_goal_width <= 0:
+            raise ValueError("--eval_goal_width must be positive")
+        env_cfg.commands.motion.eval_single_attempt = True
+        env_cfg.scene.soccer_ball_contact.filter_prim_paths_expr = [
+            "{ENV_REGEX_NS}/Robot/left_ankle_roll_link",
+            "{ENV_REGEX_NS}/Robot/right_ankle_roll_link",
+        ]
 
     if args_cli.eval_steps and args_cli.eval_ball_forward is not None:
         angle = math.radians(args_cli.eval_ball_direction_deg)
@@ -140,6 +158,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.commands.motion.eval_robot_init_radius = args_cli.eval_robot_init_radius
     if args_cli.eval_steps and args_cli.eval_ball_speed_range is not None:
         env_cfg.commands.motion.eval_ball_speed_range = tuple(args_cli.eval_ball_speed_range)
+    if args_cli.eval_steps and args_cli.eval_match_motion_to_ball:
+        env_cfg.commands.motion.eval_match_motion_to_ball = True
+    if args_cli.eval_steps and args_cli.eval_paper_protocol:
+        env_cfg.commands.motion.pose_range = {key: (0.0, 0.0) for key in ("x", "y", "z", "roll", "pitch", "yaw")}
+        env_cfg.commands.motion.velocity_range = {key: (0.0, 0.0) for key in ("x", "y", "z", "roll", "pitch", "yaw")}
+        env_cfg.commands.motion.joint_position_range = (0.0, 0.0)
+        # These events are useful for robust policy training but are not part
+        # of the paper's nominal Table IV evaluation protocol.
+        env_cfg.events.physics_material = None
+        env_cfg.events.add_joint_default_pos = None
+        env_cfg.events.base_com = None
+        env_cfg.events.push_robot = None
     if args_cli.eval_steps and (args_cli.eval_ground_friction is not None or args_cli.eval_ground_restitution is not None):
         material = env_cfg.scene.terrain.physics_material
         env_cfg.scene.terrain.physics_material = material.replace(
@@ -148,6 +178,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             restitution=args_cli.eval_ground_restitution if args_cli.eval_ground_restitution is not None else material.restitution,
         )
         env_cfg.sim.physics_material = env_cfg.scene.terrain.physics_material
+
+    if args_cli.ball_obs_noise_std is not None and args_cli.eval_ball_obs_noise != 0.0:
+        raise ValueError("Specify only one ball observation noise option")
+    ball_noise_std = args_cli.eval_ball_obs_noise if args_cli.ball_obs_noise_std is None else args_cli.ball_obs_noise_std
+    ball_noise_config = None
+    if args_cli.ball_obs_noise_std is not None or args_cli.eval_ball_obs_noise != 0.0:
+        ball_noise_config = configure_ball_observation_noise(env_cfg, ball_noise_std)
 
     # Preserve the task's robot-following camera for recorded videos.  The
     # global viewer is still preferable for non-video batch playback.
@@ -310,8 +347,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         ball = env.unwrapped.scene["soccer_ball"]
         previous_ball = ball.data.root_pos_w.detach().cpu().numpy().copy()
         goal_center = (command.target_destination_pos + env.unwrapped.scene.env_origins).detach().cpu().numpy()
-        goal_normal = previous_ball[:, :2] - goal_center[:, :2]
-        goal_normal /= np.linalg.norm(goal_normal, axis=1, keepdims=True)
+        goal_normal = goal_plane_normal(goal_center, env.unwrapped.scene.env_origins.detach().cpu().numpy())
         trials = [KickTrial() for _ in range(env.unwrapped.num_envs)]
     if args_cli.tracking_eval_steps:
         tracking = {"policy_body": [], "reference_body": [], "policy_joint": [], "reference_joint": []}
@@ -321,21 +357,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            actor_obs = obs
-            if args_cli.eval_ball_obs_noise:
-                actor_obs = obs.clone()
-                # Soccer configurations append target_point_pos followed by
-                # target_destination_pos_local to the policy observation.
-                actor_obs[:, -6:-3] += torch.randn_like(actor_obs[:, -6:-3]) * args_cli.eval_ball_obs_noise
-            actions = policy(actor_obs)
+            actions = policy(obs)
             # env stepping
-            obs, _, _, _ = env.step(actions)
+            obs, _, dones, _ = env.step(actions)
         if trials is not None:
             ball = env.unwrapped.scene["soccer_ball"]
             current_ball = ball.data.root_pos_w.detach().cpu().numpy().copy()
             velocity = ball.data.root_lin_vel_w.detach().cpu().numpy().copy()
+            contact_sensor = env.unwrapped.scene.sensors["soccer_ball_contact"]
+            contact_forces = contact_sensor.data.force_matrix_w_history
+            if contact_forces is None:
+                raise RuntimeError("Evaluation requires filtered foot-ball contact forces")
+            foot_contacts = (
+                torch.linalg.vector_norm(contact_forces, dim=-1).flatten(start_dim=1).amax(dim=1) > 0
+            ).detach().cpu().numpy()
+            done_flags = dones.detach().cpu().numpy()
             for index, trial in enumerate(trials):
-                trial.observe(previous_ball[index], current_ball[index], velocity[index], goal_center[index], goal_normal[index], 1.0, 0.5)
+                if done_flags[index]:
+                    trial.finish("episode_end")
+                    continue
+                trial.observe(
+                    previous_ball[index], current_ball[index], velocity[index], goal_center[index], goal_normal[index],
+                    args_cli.eval_goal_width, 0.5, bool(foot_contacts[index]),
+                )
             previous_ball = current_ball
             if args_cli.eval_push_speed and timestep == args_cli.eval_steps // 4:
                 robot = env.unwrapped.scene["robot"]
@@ -355,11 +399,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 break
         if trials is not None:
             timestep += 1
-            if timestep >= args_cli.eval_steps:
+            if timestep >= args_cli.eval_steps or all(trial.finished for trial in trials):
                 output = args_cli.eval_output or os.path.join(os.path.dirname(resume_path), "evaluation_single.json")
                 with open(output, "w", encoding="utf-8") as stream:
                     valid = [trial.kick_accuracy_cosine for trial in trials if np.isfinite(trial.kick_accuracy_cosine)]
-                    json.dump({"seed": args_cli.eval_seed, "trials": len(trials), "success_goal_rate": float(np.mean([trial.success for trial in trials])), "first_contact_rate": float(np.mean([trial.contacted for trial in trials])), "kick_accuracy_cosine": float(np.mean(valid)) if valid else None, "kick_accuracy_valid_trials": len(valid), "max_ball_speed": float(np.mean([trial.max_ball_speed for trial in trials]))}, stream, indent=2)
+                    json.dump({
+                        "seed": args_cli.eval_seed, "trials": len(trials), "steps": timestep,
+                        "ball_observation_noise": ball_noise_config,
+                        "goal_width": args_cli.eval_goal_width,
+                        "protocol": "single_attempt_filtered_foot_contact",
+                        "accuracy_definition": "first speed-qualified sample after foot contact",
+                        "success_goal_rate": float(np.mean([trial.success for trial in trials])),
+                        "first_contact_rate": float(np.mean([trial.contacted for trial in trials])),
+                        "kick_accuracy_cosine": float(np.mean(valid)) if valid else None,
+                        "kick_accuracy_valid_trials": len(valid),
+                        "max_ball_speed": float(np.mean([trial.max_ball_speed for trial in trials])),
+                        "episode_end_trials": sum(trial.end_reason == "episode_end" for trial in trials),
+                    }, stream, indent=2)
                 print(f"[INFO]: Wrote soccer evaluation to: {output}")
                 break
         if tracking is not None:

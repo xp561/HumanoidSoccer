@@ -1,0 +1,9 @@
+-->
+$R1Operational
+    HOLD --> @Stand
+    FAULT --> @Stand
+    RUN --> $R1BallAvailable
+        NO --> @R1Search
+        YES --> $R1AtApproach
+            NO --> @GoToBall + target:map + distance:%r1.approach_distance
+            YES --> @R1Kick + direction_deg_map:0.0 + r:false

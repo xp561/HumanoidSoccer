@@ -10,6 +10,7 @@ from isaaclab.utils.math import quat_error_magnitude, quat_apply, quat_inv, quat
 from soccer.tasks.tracking.mdp.commands_multi_motion_soccer import MotionCommand
 from soccer.tasks.tracking.mdp.observations import get_target_point_world
 from soccer.tasks.tracking.mdp.kick_detection import KickContactTracker
+from soccer.tasks.tracking.mdp.precision_alignment import direction_error_reward
 
 
 if TYPE_CHECKING:
@@ -343,10 +344,13 @@ def ball_velocity_direction_alignment(
     horizontal_force_threshold: float = 0.0,
     ball_sensor_name: str = "soccer_ball_contact",
     foot_cfg: SceneEntityCfg | None = None,
+    goal_width: float = 1.0,
+    distance_adaptive: bool = False,
 ) -> torch.Tensor:
     """Reward alignment between ball velocity direction and pre-kick target-to-destination direction.
 
     Active only for a short window after contact with the expected foot.
+    Distance-adaptive scoring is explicitly enabled by its boolean option.
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     soccer_ball = env.scene["soccer_ball"]
@@ -410,7 +414,12 @@ def ball_velocity_direction_alignment(
         vel_unit = vel_xy[active_mask] / vel_xy_norm[active_mask]
         cos_theta = torch.sum(vel_unit * dir_unit, dim=-1).clamp(-1.0, 1.0)
         error = torch.acos(cos_theta) ** 2
-        reward[active_mask] = torch.exp(-error / (std ** 2))
+        reward[active_mask] = direction_error_reward(
+            error,
+            dir_norm[active_mask].squeeze(-1),
+            std,
+            goal_width if distance_adaptive else None,
+        )
 
     # Decrement active timers.
     timer = torch.where(timer > 0, timer - 1, timer)

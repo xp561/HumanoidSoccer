@@ -54,7 +54,7 @@ def serve(session, port):
 
         def do_GET(self):
             if self.path == "/":
-                self.reply(200, PAGE, "text/html; charset=utf-8")
+                self.reply(200, getattr(session, "page", PAGE), "text/html; charset=utf-8")
             elif self.path == "/state":
                 with session.lock:
                     body = json.dumps(session.status).encode()

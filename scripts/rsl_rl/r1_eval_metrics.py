@@ -19,12 +19,28 @@ if str(REPO_ROOT) not in sys.path:
 from exp.mujoco_soccer.metrics import goal_crossed
 
 
+def goal_plane_normal(goal_center: np.ndarray, environment_origin: np.ndarray) -> np.ndarray:
+    """Keep the goal plane fixed when the initial ball position changes."""
+    direction = goal_center[..., :2] - environment_origin[..., :2]
+    length = np.linalg.norm(direction, axis=-1, keepdims=True)
+    if np.any(length < 1e-9):
+        raise ValueError("Goal center must differ from the environment origin")
+    return direction / length
+
+
 @dataclass
 class KickTrial:
     success: bool = False
     contacted: bool = False
     max_ball_speed: float = 0.0
     kick_accuracy_cosine: float = math.nan
+    finished: bool = False
+    end_reason: str = "horizon"
+
+    def finish(self, reason: str) -> None:
+        if not self.finished:
+            self.finished = True
+            self.end_reason = reason
 
     def observe(
         self,
@@ -35,16 +51,19 @@ class KickTrial:
         goal_normal: np.ndarray,
         goal_width: float,
         contact_speed: float,
+        foot_contact: bool,
     ) -> None:
-        self.success |= goal_crossed(previous_ball, current_ball, goal_center, goal_normal, goal_width)
-        speed = float(np.linalg.norm(ball_velocity[:2]))
-        if speed < contact_speed:
+        if self.finished:
             return
-        self.contacted = True
-        if speed <= self.max_ball_speed:
+        self.contacted |= foot_contact
+        self.success |= self.contacted and goal_crossed(
+            previous_ball, current_ball, goal_center, goal_normal, goal_width
+        )
+        speed = float(np.linalg.norm(ball_velocity[:2]))
+        self.max_ball_speed = max(self.max_ball_speed, speed)
+        if not self.contacted or speed < contact_speed or math.isfinite(self.kick_accuracy_cosine):
             return
         direction = goal_center[:2] - current_ball[:2]
         direction_norm = float(np.linalg.norm(direction))
         if direction_norm > 1.0e-9:
             self.kick_accuracy_cosine = float(np.clip(np.dot(ball_velocity[:2], direction) / (speed * direction_norm), -1.0, 1.0))
-        self.max_ball_speed = speed

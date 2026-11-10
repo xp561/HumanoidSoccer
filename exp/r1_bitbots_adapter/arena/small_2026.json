@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "hsl-small-2026-engineering-v1",
+  "status": "provisional engineering baseline; event year and robot eligibility unconfirmed",
+  "field_length": 9.0,
+  "field_width": 6.0,
+  "padding": 1.0,
+  "line_width": 0.05,
+  "goal_clear_width": 1.8,
+  "goal_clear_height": 1.25,
+  "goal_depth": 0.6,
+  "post_radius": 0.05,
+  "goal_area_depth": 1.0,
+  "goal_area_width": 3.0,
+  "penalty_area_depth": 2.0,
+  "penalty_area_width": 4.0,
+  "penalty_mark_distance": 1.5,
+  "center_circle_diameter": 1.5,
+  "mark_diameter": 0.1,
+  "ball_profiles": {
+    "small_candidate": {
+      "radius": 0.07,
+      "mass": 0.205,
+      "status": "candidate from Bit-Bots kid_field.xml; actual event Mini Ball unconfirmed"
+    },
+    "frozen_reference": {
+      "radius": 0.11,
+      "mass": 0.4,
+      "status": "legacy experiment control; not a Small Division ball specification"
+    }
+  }
+}

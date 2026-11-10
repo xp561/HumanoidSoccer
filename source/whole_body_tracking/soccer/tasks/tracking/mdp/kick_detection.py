@@ -32,6 +32,12 @@ class ContactFootInfo:
     expected: torch.Tensor
 
 
+def peak_horizontal_force(forces: torch.Tensor) -> torch.Tensor:
+    """Compute each environment's peak horizontal force from individual samples."""
+    norms = torch.linalg.vector_norm(forces[..., :2], dim=-1)
+    return norms.amax(dim=tuple(range(1, norms.ndim))) if norms.ndim > 1 else norms
+
+
 class KickContactTracker:
     """Shared kick contact detection logic reusable across reward terms."""
 
@@ -43,11 +49,13 @@ class KickContactTracker:
         self._cache_valid = False
         self._cached_event: Optional[KickContactEvent] = None
         self._foot_cache: Optional[tuple[torch.Tensor, torch.Tensor]] = None
+        self._foot_forces: Optional[torch.Tensor] = None
 
     def begin_step(self, command: MotionCommand):
         """Reset per-step cache and handle envs that just resampled motions."""
         self._cache_valid = False
         self._cached_event = None
+        self._foot_forces = None
         self._handle_resample(command)
 
     def detect(
@@ -69,7 +77,13 @@ class KickContactTracker:
             self._cache_valid = True
             return event
 
-        forces = getattr(ball_sensor.data, "net_forces_w_history", ball_sensor.data.net_forces_w)
+        forces = getattr(ball_sensor.data, "force_matrix_w_history", None)
+        if forces is not None and forces.numel():
+            self._foot_forces = torch.linalg.vector_norm(forces[..., :2], dim=-1).amax(dim=(1, 2))
+        else:
+            forces = getattr(ball_sensor.data, "net_forces_w_history", None)
+            if forces is None:
+                forces = ball_sensor.data.net_forces_w
         if forces is None or forces.numel() == 0:
             empty_mask = torch.zeros(self._num_envs, dtype=torch.bool, device=self._device)
             zero_force = torch.zeros(self._num_envs, dtype=torch.float32, device=self._device)
@@ -79,11 +93,8 @@ class KickContactTracker:
             return event
 
         forces = forces.to(device=self._device)
-        if forces.ndim > 2:
-            forces = forces.amax(dim=1)
-
-        force_norm = torch.linalg.norm(forces, dim=-1)
-        peak_force = force_norm.amax(dim=-1) if force_norm.ndim > 1 else force_norm
+        force_norm = torch.linalg.vector_norm(forces[..., :2], dim=-1)
+        peak_force = peak_horizontal_force(forces)
         kick_detected = peak_force > horizontal_force_threshold
 
         contact_awarded = self._get_or_init_bool_tensor("target_contact_awarded", default=False)
@@ -151,12 +162,16 @@ class KickContactTracker:
             ball_pos = ball_pos + env_origins[env_ids]
 
         diff = torch.norm(foot_pos - ball_pos.unsqueeze(1), dim=-1)
-        closest_idx = torch.argmin(diff, dim=-1)
+        if self._foot_forces is not None:
+            if self._foot_forces.shape[1] != len(body_indices):
+                raise ValueError("Ball contact filters must match the ordered foot body list")
+            closest_idx = self._foot_forces[env_ids].argmax(dim=-1)
+        else:
+            closest_idx = torch.argmin(diff, dim=-1)
         selected_body_indices = body_indices[closest_idx]
         hit_sides = sides[closest_idx]
 
         expected = command.kick_leg[env_ids].to(torch.int8)
-        expected = expected.clamp(min=0)
 
         return ContactFootInfo(env_ids, selected_body_indices, hit_sides, expected)
 

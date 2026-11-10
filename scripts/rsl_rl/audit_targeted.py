@@ -1,0 +1,250 @@
+# Copyright (c) 2022-2024, The Isaac Lab Project Developers.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Script to train RL agent with RSL-RL."""
+
+"""Launch Isaac Sim Simulator first."""
+
+import argparse
+import sys
+
+from isaaclab.app import AppLauncher
+
+# local imports
+import cli_args  # isort: skip
+
+# add argparse arguments
+parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
+parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
+parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
+parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
+parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument("--registry_name", type=str, required=False, help="The name of the wand registry.")
+parser.add_argument("--motion_path", type=str, required=True, help="The path to the motion file or directory containing motion files.")
+
+parser.add_argument("--audit_forward", type=float, required=True)
+parser.add_argument("--audit_lateral", type=float, required=True)
+parser.add_argument("--audit_rolling", action="store_true")
+parser.add_argument("--causal_variant", choices=["control", "speed_gate"], required=True)
+parser.add_argument("--baseline_config_dir", required=True)
+parser.add_argument("--causal_output", required=True)
+parser.add_argument("--audit_steps", type=int, default=0)
+parser.add_argument("--ball_obs_noise_std", type=float, default=None, help="Actor-only Gaussian ball x/y noise standard deviation in meters; omitted preserves the task default.")
+
+# append RSL-RL cli arguments
+cli_args.add_rsl_rl_args(parser)
+# append AppLauncher cli args
+AppLauncher.add_app_launcher_args(parser)
+args_cli, hydra_args = parser.parse_known_args()
+
+# always enable cameras to record video
+if args_cli.video:
+    args_cli.enable_cameras = True
+
+# clear out sys.argv for Hydra
+sys.argv = [sys.argv[0]] + hydra_args
+
+# launch omniverse app
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
+
+"""Rest everything follows."""
+
+import gymnasium as gym
+import json
+import os
+import glob
+import torch
+from datetime import datetime
+
+from isaaclab.envs import (
+    DirectMARLEnv,
+    DirectMARLEnvCfg,
+    DirectRLEnvCfg,
+    ManagerBasedRLEnvCfg,
+    multi_agent_to_single_agent,
+)
+from isaaclab.utils.dict import print_dict
+from isaaclab.utils.io import dump_pickle, dump_yaml
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_tasks.utils import get_checkpoint_path
+from isaaclab_tasks.utils.hydra import hydra_task_config
+
+# Import extensions to set up environment tasks
+import soccer.tasks  # noqa: F401
+from soccer.tasks.tracking.mdp.ball_observation_noise import configure_ball_observation_noise
+from soccer.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.deterministic = False
+torch.backends.cudnn.benchmark = False
+
+
+def get_motion_files(motion_path: str) -> list[str]:
+    """
+    Get a list of motion files.
+    
+    Args:
+        motion_path: File path or directory path.
+        
+    Returns:
+        List of motion file paths.
+    """
+    if os.path.isfile(motion_path):
+        # Single-file input.
+        return [motion_path]
+    elif os.path.isdir(motion_path):
+        # Directory input: collect all .npz files.
+        motion_files = glob.glob(os.path.join(motion_path, "*.npz"))
+        if not motion_files:
+            raise ValueError(f"No .npz files found in directory: {motion_path}")
+        motion_files.sort()
+        print(f"Found {len(motion_files)} motion files in {motion_path}")
+        for file in motion_files:
+            print(f"  - {os.path.basename(file)}")
+        return motion_files
+    else:
+        raise ValueError(f"Invalid path: {motion_path}. Must be a file or directory.")
+
+
+@hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
+def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
+    """Train with RSL-RL agent."""
+    import pickle
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from exp.r1_causal.rewards import install, flush
+    baseline_dir = Path(args_cli.baseline_config_dir)
+    with (baseline_dir / "env.pkl").open("rb") as stream:
+        env_cfg = pickle.load(stream)
+    with (baseline_dir / "agent.pkl").open("rb") as stream:
+        agent_cfg = pickle.load(stream)
+    install(env_cfg, args_cli.causal_variant, args_cli.causal_output, bool(args_cli.audit_steps))
+    # override configurations with non-hydra CLI arguments
+    agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    agent_cfg.max_iterations = (
+        args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
+    )
+
+    # set the environment seed
+    # note: certain randomizations occur in the environment initialization so we set the seed here
+    env_cfg.seed = agent_cfg.seed
+    env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    motion_files = get_motion_files(args_cli.motion_path)
+
+    env_cfg.commands.motion.motion_files = motion_files
+
+    ball_noise_config = None
+    if args_cli.ball_obs_noise_std is not None:
+        ball_noise_config = configure_ball_observation_noise(env_cfg, args_cli.ball_obs_noise_std)
+
+    # specify directory for logging experiments
+    log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
+    log_root_path = os.path.abspath(log_root_path)
+    print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    # specify directory for logging runs: {time-stamp}_{run_name}
+    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if agent_cfg.run_name:
+        log_dir += f"_{agent_cfg.run_name}"
+    log_dir = os.path.join(log_root_path, log_dir)
+
+    if ball_noise_config is not None:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "ball_observation_noise.json"), "w") as stream:
+            json.dump(ball_noise_config, stream, indent=2)
+
+    assert args_cli.audit_steps > 0, "This entry is diagnostic inference only"
+    motion_cfg = env_cfg.commands.motion
+    motion_cfg.eval_single_attempt = True
+    motion_cfg.eval_fixed_ball_pos = (args_cli.audit_lateral, -args_cli.audit_forward, .11)
+    motion_cfg.eval_fixed_ball_lin_vel = (0., 0., 0.)
+    motion_cfg.eval_fixed_target_destination = (0., -5., .11)
+    motion_cfg.eval_robot_init_radius = .5
+    motion_cfg.eval_match_motion_to_ball = True
+    motion_cfg.eval_ball_speed_range = (.1, .3) if args_cli.audit_rolling else (0., 0.)
+    motion_cfg.pose_range = {key: (0., 0.) for key in ("x", "y", "z", "roll", "pitch", "yaw")}
+    motion_cfg.velocity_range = {key: (0., 0.) for key in ("x", "y", "z", "roll", "pitch", "yaw")}
+    motion_cfg.joint_position_range = (0., 0.)
+    env_cfg.events.physics_material = None
+    env_cfg.events.add_joint_default_pos = None
+    env_cfg.events.base_com = None
+    env_cfg.events.push_robot = None
+    # create isaac environment
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    # wrap for video recording
+    if args_cli.video:
+        video_kwargs = {
+            "video_folder": os.path.join(log_dir, "videos", "train"),
+            "step_trigger": lambda step: step % args_cli.video_interval == 0,
+            "video_length": args_cli.video_length,
+            "disable_logger": True,
+        }
+        print("[INFO] Recording videos during training.")
+        print_dict(video_kwargs, nesting=4)
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+
+    # convert to single-agent instance if required by the RL algorithm
+    if isinstance(env.unwrapped, DirectMARLEnv):
+        env = multi_agent_to_single_agent(env)
+
+    # wrap around environment for rsl-rl
+    env = RslRlVecEnvWrapper(env)
+
+    # create runner from rsl-rl
+    runner = OnPolicyRunner(
+        env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=None
+    )
+    # write git state to logs
+    runner.add_git_repo_to_log(__file__)
+    # save resume path before creating a new log_dir
+    if agent_cfg.resume:
+        # get path to previous checkpoint
+        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+        # load previously trained model
+        runner.load(resume_path)
+
+    # dump the configuration into log-directory
+    dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
+    dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+    dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
+    dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+
+    from pathlib import Path
+    out = Path(args_cli.causal_output)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "run.json").write_text(json.dumps({"log_dir": log_dir, "variant": args_cli.causal_variant,
+        "seed": agent_cfg.seed, "resume_path": resume_path, "audit_steps": args_cli.audit_steps,
+        "iterations": agent_cfg.max_iterations, "num_envs": env_cfg.scene.num_envs}, indent=2))
+    if args_cli.audit_steps:
+        policy = runner.get_inference_policy(device=env.unwrapped.device)
+        obs, _ = env.get_observations()
+        for step in range(args_cli.audit_steps):
+            with torch.inference_mode():
+                actions = policy(obs["policy"] if isinstance(obs, dict) else obs)
+                obs, _, dones, _ = env.step(actions)
+                runner.alg.policy.reset(dones)
+            if step % 100 == 0:
+                print(f"[CAUSAL AUDIT] step={step}", flush=True)
+    else:
+        runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    flush()
+    (out / "completed.json").write_text(json.dumps({"completed": True, "audit": bool(args_cli.audit_steps)}))
+
+    # close the simulator
+    env.close()
+
+
+if __name__ == "__main__":
+    # run the main function
+    main()
+    # close sim app
+    simulation_app.close()

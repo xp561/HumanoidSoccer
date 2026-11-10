@@ -95,6 +95,10 @@ class R1FlatSoccerSceneCfg(MySceneCfg):
     )
     soccer_ball_contact = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/SoccerBall",
+        filter_prim_paths_expr=[
+            "{ENV_REGEX_NS}/Robot/left_ankle_roll_link",
+            "{ENV_REGEX_NS}/Robot/right_ankle_roll_link",
+        ],
         history_length=3,
         track_air_time=False,
         force_threshold=0.0,
@@ -287,7 +291,7 @@ class R1FlatProximityEnvCfg(R1FlatMotionEnvCfg):
             },
         )
 
-        self.motion_body_ori = RewTerm(
+        self.rewards.motion_body_ori = RewTerm(
         func=mdp.motion_relative_body_orientation_error_exp,
         weight=1.0,
         params={"command_name": "motion", "std": 0.4,
@@ -358,6 +362,8 @@ class R1FlatKickEnvCfg(R1FlatProximityEnvCfg):
             params={
                 "command_name": "motion",
                 "std": 0.8,
+                "goal_width": 1.0,
+                "distance_adaptive": False,
                 "velocity_threshold": 0.5,
                 "ball_sensor_name": "soccer_ball_contact",
                 "horizontal_force_threshold": 10,
