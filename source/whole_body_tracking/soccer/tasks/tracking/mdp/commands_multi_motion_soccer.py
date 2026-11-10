@@ -771,7 +771,7 @@ class MotionCommand(CommandTerm):
                 radius = float(self.cfg.eval_robot_init_radius)
             else:
                 radius = linear_initial_position_radius(
-                    self._env.common_step_counter,
+                    self._env.common_step_counter + getattr(self, "initial_position_step_offset", 0),
                     self.cfg.train_init_radius_start,
                     self.cfg.train_init_radius_end,
                     self.cfg.train_init_ramp_steps,
