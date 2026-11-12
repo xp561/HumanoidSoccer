@@ -328,6 +328,7 @@ class R1FlatProximityEnvCfg(R1FlatMotionEnvCfg):
 class R1FlatKickEnvCfg(R1FlatProximityEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+        self.commands.motion.train_init_position_curriculum = True
 
         self.rewards.target_point_contact = RewTerm(
             func=mdp.target_point_contact,
@@ -358,6 +359,8 @@ class R1FlatKickEnvCfg(R1FlatProximityEnvCfg):
             params={
                 "command_name": "motion",
                 "std": 0.8,
+                "goal_width": 1.0,
+                "distance_adaptive": True,
                 "velocity_threshold": 0.5,
                 "ball_sensor_name": "soccer_ball_contact",
                 "horizontal_force_threshold": 10,

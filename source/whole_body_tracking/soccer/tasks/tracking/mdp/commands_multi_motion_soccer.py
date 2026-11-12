@@ -24,6 +24,7 @@ from isaaclab.utils.math import (
     yaw_quat,
 )
 
+from .initial_position_curriculum import linear_initial_position_radius
 from .kick_detection import KickContactTracker
 
 if TYPE_CHECKING:
@@ -153,6 +154,7 @@ class MotionCommand(CommandTerm):
     def __init__(self, cfg: MotionCommandCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
 
+        self.initial_position_step_offset = 0
         self.robot: Articulation = env.scene[cfg.asset_name]
         self.soccer_ball: RigidObject | None = None
         # Try to get the soccer-ball object.
@@ -730,13 +732,30 @@ class MotionCommand(CommandTerm):
         root_lin_vel = self.body_lin_vel_w[:, 0].clone()
         root_ang_vel = self.body_ang_vel_w[:, 0].clone()
 
+        evaluation_radius = self.cfg.eval_robot_init_radius
+        use_init_curriculum = (
+            getattr(self.cfg, "train_init_position_curriculum", False)
+            and evaluation_radius is None
+        )
         range_list = [self.cfg.pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
         ranges = torch.tensor(range_list, device=self.device)
         rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device)
+        if use_init_curriculum:
+            rand_samples[:, :2] = 0
         root_pos[env_ids] += rand_samples[:, 0:3]
-        if self.cfg.eval_robot_init_radius is not None:
-            radius = float(self.cfg.eval_robot_init_radius)
-            disk_radius = radius * torch.sqrt(torch.rand(len(env_ids), device=self.device))
+        radius = evaluation_radius
+        if use_init_curriculum:
+            radius = linear_initial_position_radius(
+                self._env.common_step_counter + self.initial_position_step_offset,
+                self.cfg.train_init_radius_start,
+                self.cfg.train_init_radius_end,
+                self.cfg.train_init_ramp_steps,
+            )
+            if "initial_position_radius" not in self.metrics:
+                self.metrics["initial_position_radius"] = torch.zeros(self.num_envs, device=self.device)
+            self.metrics["initial_position_radius"][env_ids] = radius
+        if radius is not None:
+            disk_radius = float(radius) * torch.sqrt(torch.rand(len(env_ids), device=self.device))
             disk_angle = 2.0 * math.pi * torch.rand(len(env_ids), device=self.device)
             root_pos[env_ids, 0] += disk_radius * torch.cos(disk_angle)
             root_pos[env_ids, 1] += disk_radius * torch.sin(disk_angle)
@@ -905,6 +924,12 @@ class MotionCommandCfg(CommandTermCfg):
     eval_fixed_ball_lin_vel: tuple[float, float, float] | None = None
     eval_fixed_target_destination: tuple[float, float, float] | None = None
     eval_robot_init_radius: float | None = None
+
+    train_init_position_curriculum: bool = False
+    train_init_radius_start: float = 0.05
+    train_init_radius_end: float = 0.5
+    train_init_ramp_steps: int = 24000
+
     eval_ball_speed_range: tuple[float, float] | None = None
     
     # Blind-zone config: ball is invisible when robot-ball (x, y) distance is outside [min, max].
