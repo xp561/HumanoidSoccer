@@ -2,6 +2,7 @@ import gymnasium as gym
 
 from . import agents, flat_env_cfg
 from . import soccer_flat_env_cfg
+from . import spur_env_cfg
 
 ##
 # Register Gym environments.
@@ -162,5 +163,26 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": soccer_flat_env_cfg.R1FlatSoccerStudentEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:R1FlatStudentTeacherPPORunnerCfg",
+    },
+)
+
+## spur (github.com/Houman-HM/spur @8f34f3a) robot parameters -- same rewards/obs/PPO as above
+gym.register(
+    id="Tracking-Terrain-R1-Spur-RNN-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": spur_env_cfg.R1SpurTerrainMotionEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:R1FlatRecurrentPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Tracking-Flat-R1-SoccerMoving-Spur-RNN-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": spur_env_cfg.R1SpurFlatKickMovingEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:R1FlatRecurrentPPORunnerCfg",
     },
 )
