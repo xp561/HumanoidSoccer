@@ -186,3 +186,17 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:R1FlatRecurrentPPORunnerCfg",
     },
 )
+
+## spur params + FreiBots R1 training-guideline deployment constraints (target clamp, 0-40 ms delay,
+## target-excess penalty, hard-limit and 0.8 rad tilt terminations)
+from . import spur_guided_env_cfg  # noqa: E402
+
+gym.register(
+    id="Tracking-Flat-R1-SoccerMoving-SpurGuided-RNN-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": spur_guided_env_cfg.R1SpurGuidedFlatKickMovingEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:R1FlatRecurrentPPORunnerCfg",
+    },
+)
